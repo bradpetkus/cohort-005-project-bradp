@@ -4,6 +4,7 @@ import { Sidebar } from "~/components/sidebar";
 import { DevUI } from "~/components/dev-ui";
 import { NotificationBell } from "~/components/notification-bell";
 import { getUnreadCount, listBell } from "~/lib/notifications.server";
+import { vapidPublicKey } from "~/lib/push.server";
 import { Toaster } from "sonner";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
@@ -223,6 +224,8 @@ export async function loader({ request }: Route.LoaderArgs) {
           rows: listBell(db, currentUser.id),
         }
       : null,
+    // The browser subscribes with this; null when phone push isn't set up.
+    pushPublicKey: vapidPublicKey(),
   };
 }
 
@@ -236,6 +239,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countries,
     isTeamAdmin: userIsTeamAdmin,
     bell,
+    pushPublicKey,
   } = loaderData;
 
   return (
@@ -246,7 +250,11 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         isTeamAdmin={userIsTeamAdmin}
         headerSlot={
           bell ? (
-            <NotificationBell unreadCount={bell.unreadCount} rows={bell.rows} />
+            <NotificationBell
+              unreadCount={bell.unreadCount}
+              rows={bell.rows}
+              pushPublicKey={pushPublicKey}
+            />
           ) : null
         }
       />
