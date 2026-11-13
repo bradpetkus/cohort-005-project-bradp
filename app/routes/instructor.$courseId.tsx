@@ -58,6 +58,16 @@ import {
 import { data, isRouteErrorResponse } from "react-router";
 import { z } from "zod";
 import { parseFormData, parseParams } from "~/lib/validation";
+// PROTOTYPE: Sending an Announcement — never merge
+import {
+  AnnouncementPrototype,
+  VariantAHeaderButton,
+  VariantBLessonButton,
+  VariantCTabContent,
+  useAnnouncementVariant,
+  type AnnouncementTarget,
+} from "~/components/announcement-prototype/variants";
+import { Megaphone } from "lucide-react";
 
 function getUserById(id: number) {
   return db.select().from(users).where(eq(users.id, id)).get();
@@ -639,7 +649,29 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
   const quizCount = lessonQuizzes.length;
 
-  return { course, lessonCount, enrollmentCount, students, quizCount };
+  // PROTOTYPE: Lapsed = has progress on a lesson of this course but no Enrollment
+  const enrolledIds = new Set(enrolledStudents.map((e) => e.userId));
+  const lessonIds = new Set(allCourseLessons.map((l) => l.id));
+  const progressUserIds = new Set(
+    db
+      .select({ userId: lessonProgress.userId, lessonId: lessonProgress.lessonId })
+      .from(lessonProgress)
+      .all()
+      .filter((r) => lessonIds.has(r.lessonId))
+      .map((r) => r.userId)
+  );
+  const lapsedCount = [...progressUserIds].filter((id) => !enrolledIds.has(id))
+    .length;
+
+  return {
+    course,
+    lessonCount,
+    enrollmentCount,
+    students,
+    quizCount,
+    announcementQuizzes: lessonQuizzes,
+    lapsedCount,
+  };
 }
 
 export async function action({ params, request }: Route.ActionArgs) {
@@ -1492,8 +1524,42 @@ function statusBadgeColor(status: string) {
 export default function InstructorCourseEditor({
   loaderData,
 }: Route.ComponentProps) {
-  const { course, lessonCount, enrollmentCount, students, quizCount } =
+  const {
+    course,
+    lessonCount,
+    enrollmentCount,
+    students,
+    quizCount,
+    announcementQuizzes,
+    lapsedCount,
+  } =
     loaderData;
+  // PROTOTYPE: Sending an Announcement
+  const announcementVariant = useAnnouncementVariant();
+  const announcementTargets: AnnouncementTarget[] = course.modules.flatMap(
+    (mod) =>
+      mod.lessons.flatMap((l) => {
+        const quiz = announcementQuizzes.find((q) => q.lessonId === l.id);
+        const base = {
+          lessonId: l.id,
+          lessonTitle: l.title,
+          moduleTitle: mod.title,
+        };
+        return [
+          { ...base, key: `lesson:${l.id}`, kind: "lesson" as const, title: l.title },
+          ...(quiz
+            ? [
+                {
+                  ...base,
+                  key: `quiz:${quiz.quizId}`,
+                  kind: "quiz" as const,
+                  title: quiz.quizTitle,
+                },
+              ]
+            : []),
+        ];
+      })
+  );
   const statusFetcher = useFetcher();
   const reorderFetcher = useFetcher();
   const lessonReorderFetcher = useFetcher();
@@ -1651,6 +1717,13 @@ export default function InstructorCourseEditor({
   }
 
   return (
+    <AnnouncementPrototype
+      courseTitle={course.title}
+      instructorName={course.instructorName}
+      targets={announcementTargets}
+      recipients={students.map((s) => s.name)}
+      lapsedCount={lapsedCount}
+    >
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
       {/* Breadcrumb */}
       <nav className="mb-6 text-sm text-muted-foreground">
@@ -1692,6 +1765,9 @@ export default function InstructorCourseEditor({
           <span className="text-xs text-muted-foreground">
             Slug: /courses/{course.slug}
           </span>
+          <span className="ml-auto">
+            <VariantAHeaderButton />
+          </span>
         </div>
       </div>
 
@@ -1714,7 +1790,19 @@ export default function InstructorCourseEditor({
             <Users className="size-4" />
             Students
           </TabsTrigger>
+          {announcementVariant === "C" && (
+            <TabsTrigger value="announcements">
+              <Megaphone className="size-4" />
+              Announcements
+            </TabsTrigger>
+          )}
         </TabsList>
+
+        {announcementVariant === "C" && (
+          <TabsContent value="announcements" className="mt-6">
+            <VariantCTabContent />
+          </TabsContent>
+        )}
 
         {/* Content Tab */}
         <TabsContent value="content" className="mt-6">
@@ -1868,6 +1956,9 @@ export default function InstructorCourseEditor({
                                                         <FileEdit className="size-3.5" />
                                                       </Button>
                                                     </Link>
+                                                    <VariantBLessonButton
+                                                      lessonId={lesson.id}
+                                                    />
                                                     <DeleteLessonButton
                                                       lessonId={lesson.id}
                                                       lessonTitle={lesson.title}
@@ -2214,6 +2305,7 @@ export default function InstructorCourseEditor({
         </TabsContent>
       </Tabs>
     </div>
+    </AnnouncementPrototype>
   );
 }
 
