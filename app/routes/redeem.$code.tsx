@@ -12,6 +12,7 @@ import { Button } from "~/components/ui/button";
 import { Ticket, AlertCircle, CheckCircle2, Globe } from "lucide-react";
 import { data } from "react-router";
 import { db } from "~/db";
+import { recordNotificationEvent } from "~/lib/notifications.server";
 import { purchases, coupons, courses, enrollments } from "~/db/schema";
 import { eq, and } from "drizzle-orm";
 
@@ -41,7 +42,7 @@ const SEAT_REFUNDED =
   "This seat is no longer available. Ask the person who shared it with you.";
 
 type RedeemResult =
-  | { ok: true; enrollment: typeof enrollments.$inferSelect }
+  | { ok: true; seatId: number; enrollment: typeof enrollments.$inferSelect }
   | { ok: false; error: string };
 
 function redeemCoupon(
@@ -109,7 +110,7 @@ function redeemCoupon(
     .returning()
     .get();
 
-  return { ok: true, enrollment };
+  return { ok: true, seatId: coupon.id, enrollment };
 }
 
 const redeemParamsSchema = z.object({
@@ -204,6 +205,23 @@ export async function action({ params, request }: Route.ActionArgs) {
     return data({ error: result.error }, { status: 400 });
   }
 
+  const now = new Date();
+  recordNotificationEvent(
+    db,
+    { type: "seat_claimed", seatId: result.seatId },
+    now
+  );
+  recordNotificationEvent(
+    db,
+    {
+      type: "enrollment_gained",
+      userId: currentUserId,
+      courseId: result.enrollment.courseId,
+      via: "seat",
+    },
+    now
+  );
+
   const course = getCourseById(result.enrollment.courseId);
   if (!course) {
     throw redirect("/courses");
@@ -237,7 +255,10 @@ export default function Redeem({
 
   // Determine which state to show
   const canRedeem =
-    !alreadyRedeemed && !alreadyEnrolled && !countryMismatch && !unavailableReason;
+    !alreadyRedeemed &&
+    !alreadyEnrolled &&
+    !countryMismatch &&
+    !unavailableReason;
 
   return (
     <div className="mx-auto max-w-2xl p-6 lg:p-8">

@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { Route } from "./+types/courses.$slug.purchase";
 import { getCurrentUserId } from "~/lib/session";
 import { db } from "~/db";
+import { recordNotificationEvent } from "~/lib/notifications.server";
 import {
   courses,
   categories,
@@ -367,15 +368,47 @@ export async function action({ params, request }: Route.ActionArgs) {
     if (isUserEnrolled(currentUserId, course.id)) {
       throw redirect(`/courses/${slug}`);
     }
-    createPurchase(currentUserId, course.id, pppPrice, country);
+    const purchase = createPurchase(
+      currentUserId,
+      course.id,
+      pppPrice,
+      country
+    );
     enrollUser(currentUserId, course.id, false, false);
+    const now = new Date();
+    recordNotificationEvent(
+      db,
+      { type: "purchase_made", purchaseId: purchase.id },
+      now
+    );
+    recordNotificationEvent(
+      db,
+      {
+        type: "enrollment_gained",
+        userId: currentUserId,
+        courseId: course.id,
+        via: "purchase",
+      },
+      now
+    );
     throw redirect(`/courses/${slug}/welcome`);
   }
 
   // Team purchase — user does NOT get enrolled themselves
   const { quantity } = parsed.data;
   const totalPrice = pppPrice * quantity;
-  createTeamPurchase(currentUserId, course.id, totalPrice, country, quantity);
+  const { purchase } = createTeamPurchase(
+    currentUserId,
+    course.id,
+    totalPrice,
+    country,
+    quantity
+  );
+  recordNotificationEvent(
+    db,
+    { type: "purchase_made", purchaseId: purchase.id },
+    new Date()
+  );
   throw redirect(`/team`);
 }
 
