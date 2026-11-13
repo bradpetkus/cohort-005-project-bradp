@@ -215,8 +215,7 @@ export async function action({ params, request }: Route.ActionArgs) {
     db,
     {
       type: "enrollment_gained",
-      userId: currentUserId,
-      courseId: result.enrollment.courseId,
+      enrollmentId: result.enrollment.id,
       via: "seat",
     },
     now

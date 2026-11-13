@@ -374,7 +374,7 @@ export async function action({ params, request }: Route.ActionArgs) {
       pppPrice,
       country
     );
-    enrollUser(currentUserId, course.id, false, false);
+    const enrollment = enrollUser(currentUserId, course.id, false, false);
     const now = new Date();
     recordNotificationEvent(
       db,
@@ -385,8 +385,7 @@ export async function action({ params, request }: Route.ActionArgs) {
       db,
       {
         type: "enrollment_gained",
-        userId: currentUserId,
-        courseId: course.id,
+        enrollmentId: enrollment.id,
         via: "purchase",
       },
       now

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
 import { AnnouncementTargetKind, PushEventType, UserRole } from "~/db/schema";
@@ -196,6 +197,16 @@ function buyForSelf(userId: number) {
   return purchase;
 }
 
+function enrollmentOf(userId: number) {
+  const enrollment = db
+    .select({ id: schema.enrollments.id })
+    .from(schema.enrollments)
+    .where(eq(schema.enrollments.userId, userId))
+    .get();
+  if (!enrollment) throw new Error("Not enrolled");
+  return enrollment.id;
+}
+
 // What the refund route does: raise, then record the event.
 function requestRefund(buyerId: number, when = NOW) {
   const purchase = buyForSelf(buyerId);
@@ -364,8 +375,7 @@ describe("in-app-only events", () => {
         db,
         {
           type: "enrollment_gained",
-          userId: sam.id,
-          courseId: base.course.id,
+          enrollmentId: enrollmentOf(sam.id),
           via: "purchase",
         },
         NOW

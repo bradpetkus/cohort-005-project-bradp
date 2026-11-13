@@ -961,8 +961,9 @@ export type BusinessEvent =
   | { type: "purchase_made"; purchaseId: number }
   | {
       type: "enrollment_gained";
-      userId: number;
-      courseId: number;
+      // The Enrollment this Purchase or Seat claim created. Record nothing
+      // when the person was already enrolled.
+      enrollmentId: number;
       via: "purchase" | "seat";
     }
   | { type: "seat_claimed"; seatId: number };
@@ -977,7 +978,7 @@ function recordBusinessEvent(
       recordPurchase(db, event.purchaseId, now);
       break;
     case "enrollment_gained":
-      recordEnrollmentGained(db, event.userId, event.courseId, event.via, now);
+      recordEnrollmentGained(db, event.enrollmentId, event.via, now);
       break;
     case "seat_claimed":
       recordSeatClaimed(db, event.seatId, now);
@@ -1028,14 +1029,15 @@ function recordSeatClaimed(db: Db, seatId: number, now: Date) {
 
 function recordEnrollmentGained(
   db: Db,
-  userId: number,
-  courseId: number,
+  enrollmentId: number,
   via: "purchase" | "seat",
   now: Date
 ) {
   const enrollment = db
     .select({
       id: enrollments.id,
+      userId: enrollments.userId,
+      courseId: enrollments.courseId,
       actorName: users.name,
       courseTitle: courses.title,
       instructorId: courses.instructorId,
@@ -1043,12 +1045,23 @@ function recordEnrollmentGained(
     .from(enrollments)
     .innerJoin(users, eq(users.id, enrollments.userId))
     .innerJoin(courses, eq(courses.id, enrollments.courseId))
-    .where(
-      and(eq(enrollments.userId, userId), eq(enrollments.courseId, courseId))
-    )
-    .orderBy(desc(enrollments.id))
+    .where(eq(enrollments.id, enrollmentId))
     .get();
-  if (!enrollment || enrollment.instructorId === userId) return;
+  if (!enrollment || enrollment.instructorId === enrollment.userId) return;
+
+  // Each Enrollment counts once, however often it is reported.
+  const alreadyCounted = db
+    .select({ id: notificationSources.id })
+    .from(notificationSources)
+    .where(
+      and(
+        eq(notificationSources.sourceKind, NotificationSourceKind.Enrollment),
+        eq(notificationSources.sourceId, enrollment.id)
+      )
+    )
+    .get();
+  if (alreadyCounted) return;
+  const courseId = enrollment.courseId;
 
   // The source is the Enrollment, but an Enrollment ending never touches the
   // row: the bundled count is a record of who joined.

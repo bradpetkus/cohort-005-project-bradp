@@ -59,7 +59,11 @@ function buyForSelf(userId: number, courseId = base.course.id, when = NOW) {
     .values({ userId, courseId, amountPaid: 7900 })
     .returning()
     .get();
-  db.insert(schema.enrollments).values({ userId, courseId }).run();
+  const enrollment = db
+    .insert(schema.enrollments)
+    .values({ userId, courseId })
+    .returning()
+    .get();
   return [
     recordNotificationEvent(
       db,
@@ -68,7 +72,7 @@ function buyForSelf(userId: number, courseId = base.course.id, when = NOW) {
     ),
     recordNotificationEvent(
       db,
-      { type: "enrollment_gained", userId, courseId, via: "purchase" },
+      { type: "enrollment_gained", enrollmentId: enrollment.id, via: "purchase" },
       when
     ),
   ];
@@ -108,19 +112,16 @@ function claimSeat(seatId: number, userId: number, when = NOW) {
     .set({ redeemedByUserId: userId, redeemedAt: when.toISOString() })
     .where(eq(schema.coupons.id, seatId))
     .run();
-  db.insert(schema.enrollments)
+  const enrollment = db
+    .insert(schema.enrollments)
     .values({ userId, courseId: base.course.id })
-    .run();
+    .returning()
+    .get();
   return [
     recordNotificationEvent(db, { type: "seat_claimed", seatId }, when),
     recordNotificationEvent(
       db,
-      {
-        type: "enrollment_gained",
-        userId,
-        courseId: base.course.id,
-        via: "seat",
-      },
+      { type: "enrollment_gained", enrollmentId: enrollment.id, via: "seat" },
       when
     ),
   ];
@@ -236,6 +237,27 @@ describe("an Enrollment gained", () => {
         `/instructor/${base.course.id}/students`,
       ],
       ["Cy enrolled in Other Course", `/instructor/${other.id}/students`],
+    ]);
+  });
+
+  it("never counts an Enrollment that was already counted", () => {
+    const ana = addUser("Ana");
+    buyForSelf(ana.id);
+    const [enrollment] = db
+      .select({ id: schema.enrollments.id })
+      .from(schema.enrollments)
+      .where(eq(schema.enrollments.userId, ana.id))
+      .all();
+
+    // The same Enrollment reported again: Ana is not a new Student.
+    recordNotificationEvent(
+      db,
+      { type: "enrollment_gained", enrollmentId: enrollment.id, via: "purchase" },
+      minutesAfter(1)
+    );
+
+    expect(listBell(db, base.instructor.id).map((row) => row.title)).toEqual([
+      "Ana enrolled in Test Course",
     ]);
   });
 
