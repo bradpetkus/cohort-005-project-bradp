@@ -3,6 +3,10 @@ import type { Route } from "./+types/layout.app";
 import { Sidebar } from "~/components/sidebar";
 import { DevUI } from "~/components/dev-ui";
 import { Toaster } from "sonner";
+// PROTOTYPE: notification bell
+import { NotificationsPrototypeProvider } from "~/components/notifications-prototype/store";
+import { PrototypeSwitcher } from "~/components/notifications-prototype/shared";
+import { SidebarHeaderSlot, SidebarNavSlot } from "~/components/notifications-prototype/variants";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
 import { eq, and, or, sql, desc } from "drizzle-orm";
@@ -171,6 +175,24 @@ function getRecentlyProgressedCourses(userId: number, limit: number = 3) {
     .all();
 }
 
+// PROTOTYPE: one real lesson so click-throughs land somewhere real.
+function getSampleLinks() {
+  const row = db
+    .select({ courseTitle: courses.title, courseSlug: courses.slug, lessonId: lessons.id, lessonTitle: lessons.title })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .innerJoin(courses, eq(modules.courseId, courses.id))
+    .limit(1)
+    .get();
+  if (!row) return null;
+  return {
+    courseTitle: row.courseTitle,
+    courseSlug: row.courseSlug,
+    lessonTitle: row.lessonTitle,
+    lessonHref: `/courses/${row.courseSlug}/lessons/${row.lessonId}`,
+  };
+}
+
 export async function loader({ request }: Route.LoaderArgs) {
   const users = getAllUsers();
   const currentUserId = await getCurrentUserId(request);
@@ -213,6 +235,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     countryTierInfo,
     countries: COUNTRIES,
     isTeamAdmin: currentUserId ? isTeamAdmin(currentUserId) : false,
+    sampleLinks: getSampleLinks(),
   };
 }
 
@@ -225,14 +248,22 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countryTierInfo,
     countries,
     isTeamAdmin: userIsTeamAdmin,
+    sampleLinks,
   } = loaderData;
 
   return (
+    <NotificationsPrototypeProvider
+      role={currentUser?.role ?? null}
+      isTeamAdmin={userIsTeamAdmin}
+      links={sampleLinks}
+    >
     <div className="flex h-screen overflow-hidden">
       <Sidebar
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
+        headerSlot={currentUser ? <SidebarHeaderSlot /> : null}
+        navSlot={currentUser ? <SidebarNavSlot /> : null}
       />
       <main className="flex-1 overflow-y-auto">
         <Outlet />
@@ -245,6 +276,8 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         countries={countries}
       />
       <Toaster position="bottom-right" richColors closeButton />
+      {currentUser && <PrototypeSwitcher />}
     </div>
+    </NotificationsPrototypeProvider>
   );
 }
