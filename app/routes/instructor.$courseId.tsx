@@ -11,7 +11,10 @@ import type { Route } from "./+types/instructor.$courseId";
 import { getCurrentUserId } from "~/lib/session";
 import { CourseStatus, UserRole } from "~/db/schema";
 import { db } from "~/db";
-import { recordNotificationEvent } from "~/lib/notifications.server";
+import {
+  deleteWithNotifications,
+  type Tx,
+} from "~/lib/notifications.server";
 import {
   courses,
   categories,
@@ -240,10 +243,10 @@ function updateModuleTitle(id: number, title: string) {
     .get();
 }
 
-function deleteModule(id: number) {
+function deleteModule(tx: Tx, id: number) {
   // Delete all lessons in this module first
-  db.delete(lessons).where(eq(lessons.moduleId, id)).run();
-  return db.delete(modules).where(eq(modules.id, id)).returning().get();
+  tx.delete(lessons).where(eq(lessons.moduleId, id)).run();
+  return tx.delete(modules).where(eq(modules.id, id)).returning().get();
 }
 
 function reorderModules(courseId: number, moduleIds: number[]) {
@@ -308,8 +311,8 @@ function updateLessonTitle(id: number, title: string) {
     .get();
 }
 
-function deleteLesson(id: number) {
-  return db.delete(lessons).where(eq(lessons.id, id)).returning().get();
+function deleteLesson(tx: Tx, id: number) {
+  return tx.delete(lessons).where(eq(lessons.id, id)).returning().get();
 }
 
 function reorderLessons(moduleId: number, lessonIds: number[]) {
@@ -760,13 +763,9 @@ export async function action({ params, request }: Route.ActionArgs) {
         { status: 404 }
       );
     }
-    // Before the delete, while the module's lessons can still be found.
-    recordNotificationEvent(
-      db,
-      { type: "module_deleted", moduleId },
-      new Date()
+    deleteWithNotifications(db, { type: "module_deleted", moduleId }, (tx) =>
+      deleteModule(tx, moduleId)
     );
-    deleteModule(moduleId);
     return { success: true, field: "module" };
   }
 
@@ -857,12 +856,9 @@ export async function action({ params, request }: Route.ActionArgs) {
         { status: 404 }
       );
     }
-    recordNotificationEvent(
-      db,
-      { type: "lesson_deleted", lessonId },
-      new Date()
+    deleteWithNotifications(db, { type: "lesson_deleted", lessonId }, (tx) =>
+      deleteLesson(tx, lessonId)
     );
-    deleteLesson(lessonId);
     return { success: true, field: "lesson" };
   }
 

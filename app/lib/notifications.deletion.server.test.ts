@@ -4,6 +4,7 @@ import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
 import { AnnouncementTargetKind, UserRole } from "~/db/schema";
 import {
+  deleteWithNotifications,
   listAnnouncements,
   listBell,
   markAllNotificationsRead,
@@ -237,14 +238,34 @@ describe("deleting a comment", () => {
   });
 });
 
-// What the Instructor course page's delete-lesson action does: tell the
-// notifications module first, then hard-delete.
+// What the Instructor course page's delete-lesson action does: clean up the
+// bell and hard-delete in one transaction.
 function deleteLesson(id: number) {
-  recordNotificationEvent(db, { type: "lesson_deleted", lessonId: id }, NOW);
-  db.delete(schema.lessons).where(eq(schema.lessons.id, id)).run();
+  deleteWithNotifications(db, { type: "lesson_deleted", lessonId: id }, (tx) =>
+    tx.delete(schema.lessons).where(eq(schema.lessons.id, id)).run()
+  );
 }
 
 describe("deleting a lesson", () => {
+  it("leaves Notifications and Announcements alone when the delete fails", () => {
+    const sam = addLearner("Sam");
+    enroll(sam.id);
+    announce(AnnouncementTargetKind.Lesson);
+    const before = listBell(db, sam.id);
+
+    expect(() =>
+      deleteWithNotifications(db, { type: "lesson_deleted", lessonId }, () => {
+        throw new Error("delete failed");
+      })
+    ).toThrow("delete failed");
+
+    expect(sentHistory()).toEqual([
+      { lessonId, kind: AnnouncementTargetKind.Lesson },
+    ]);
+    expect(listBell(db, sam.id)).toEqual(before);
+    expect(before).toHaveLength(1);
+  });
+
   it("removes its Announcements, for the lesson and its quiz, and their rows", () => {
     const sam = addLearner("Sam");
     enroll(sam.id);

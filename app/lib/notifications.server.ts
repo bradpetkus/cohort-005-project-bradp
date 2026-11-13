@@ -36,8 +36,8 @@ import { pushEventTypesFor as pushEventTypesForRole } from "~/lib/push";
 // messages to deliver, the way refund functions return an Email.
 
 export type Db = BetterSQLite3Database<typeof schema>;
-type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type Queryable = Db | Tx;
+export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+export type Queryable = Db | Tx;
 
 // ─── Domain events ───
 
@@ -1536,8 +1536,32 @@ export type SourceDeletedEvent =
   | { type: "quiz_deleted"; lessonId: number }
   | { type: "module_deleted"; moduleId: number };
 
+export type HardDeleteEvent = Exclude<
+  SourceDeletedEvent,
+  { type: "comment_deleted" }
+>;
+
+// Hard-deletes a lesson, quiz or module and cleans up the bell in one
+// transaction: the cleanup runs first, while the module's lessons can still
+// be found, and if the delete throws nothing is removed.
+export function deleteWithNotifications<T>(
+  db: Db,
+  event: HardDeleteEvent,
+  hardDelete: (tx: Tx) => T
+): T {
+  return db.transaction((tx) => {
+    removeDeletedSource(tx, event);
+    return hardDelete(tx);
+  });
+}
+
 function recordSourceDeleted(db: Db, event: SourceDeletedEvent): RecordResult {
-  db.transaction((tx) => {
+  db.transaction((tx) => removeDeletedSource(tx, event));
+  return { pushMessages: [] };
+}
+
+function removeDeletedSource(tx: Tx, event: SourceDeletedEvent) {
+  {
     switch (event.type) {
       case "comment_deleted":
         removeSources(
@@ -1572,8 +1596,7 @@ function recordSourceDeleted(db: Db, event: SourceDeletedEvent): RecordResult {
         );
         break;
     }
-  });
-  return { pushMessages: [] };
+  }
 }
 
 // Everything under the lessons: comment rows and Announcements (lesson and
