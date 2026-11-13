@@ -17,7 +17,11 @@ const MAX_TOASTS = 3;
 
 type Bell = { unreadCount: number; rows: BellRow[] };
 
-export function LiveBell({ unreadCount, rows }: Bell) {
+export function LiveBell({
+  unreadCount,
+  rows,
+  pushPublicKey = null,
+}: Bell & { pushPublicKey?: string | null }) {
   const poll = useFetcher<typeof loader>();
   const submit = useSubmit();
   const [bell, setBell] = useState<Bell>({ unreadCount, rows });
@@ -82,5 +86,11 @@ export function LiveBell({ unreadCount, rows }: Bell) {
     };
   }, []);
 
-  return <NotificationBell unreadCount={bell.unreadCount} rows={bell.rows} />;
+  return (
+    <NotificationBell
+      unreadCount={bell.unreadCount}
+      rows={bell.rows}
+      pushPublicKey={pushPublicKey}
+    />
+  );
 }

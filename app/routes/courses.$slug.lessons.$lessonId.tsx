@@ -11,7 +11,10 @@ import {
 } from "~/components/comment-thread";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
 import { db } from "~/db";
-import { recordNotificationEvent } from "~/lib/notifications.server";
+import {
+  deliverPushMessages,
+  recordNotificationEvent,
+} from "~/lib/notifications.server";
 import {
   categories,
   comments,
@@ -907,19 +910,14 @@ export async function action({ params, request }: Route.ActionArgs) {
           parsed.data.parentId ?? null,
           parsed.data.body
         );
-        if (created.parentId !== null) {
-          recordNotificationEvent(
-            db,
-            { type: "comment_reply", commentId: created.id },
-            new Date()
-          );
-        } else {
-          recordNotificationEvent(
-            db,
-            { type: "new_question", commentId: created.id },
-            new Date()
-          );
-        }
+        const { pushMessages } = recordNotificationEvent(
+          db,
+          created.parentId !== null
+            ? { type: "comment_reply", commentId: created.id }
+            : { type: "new_question", commentId: created.id },
+          new Date()
+        );
+        await deliverPushMessages(db, pushMessages);
         return { ok: true };
       }
 

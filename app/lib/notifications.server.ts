@@ -11,14 +11,18 @@ import {
   modules,
   notifications,
   notificationSources,
+  pushPreferences,
+  pushSubscriptions,
   quizzes,
   refunds,
   users,
   AnnouncementTargetKind,
   NotificationSourceKind,
   NotificationType,
+  PushEventType,
 } from "~/db/schema";
 import { coupons, enrollments, purchases, UserRole } from "~/db/schema";
+import { defaultPushTransport, type PushTransport } from "~/lib/push.server";
 
 // ─── Notifications ───
 // The only place that knows notification rules: who hears about an event,
@@ -50,6 +54,9 @@ export type PushMessage = {
   body: string;
   tag: string;
   url: string;
+  // Only this one device of the person's (the test push). Otherwise every
+  // device.
+  endpoint?: string;
 };
 
 export type RecordResult = { pushMessages: PushMessage[] };
@@ -173,9 +180,10 @@ function recordReply(db: Db, commentId: number, now: Date): RecordResult {
   const recipients = new Set([thread.userId, ...earlierRepliers]);
   recipients.delete(replyRow.actorId);
 
+  const pushMessages: PushMessage[] = [];
   db.transaction((tx) => {
     for (const recipientId of recipients) {
-      notify(
+      const push = notify(
         tx,
         {
           recipientId,
@@ -196,10 +204,11 @@ function recordReply(db: Db, commentId: number, now: Date): RecordResult {
         },
         now
       );
+      if (push) pushMessages.push(push);
     }
   });
 
-  return { pushMessages: [] };
+  return { pushMessages };
 }
 
 // Reply `detail`: is the recipient the thread's top-level author?
@@ -407,12 +416,14 @@ type Source = {
 
 // Merges into the recipient's unread row with the same bundle key, moving it
 // to the top and its display fields to the latest event, or starts a new row.
+// Returns the push message for this event, or null when it isn't pushed (see
+// shouldPush). A pushed event sets the row's 📱 flag.
 function notify(
   tx: Queryable,
   fields: BellRowFields,
   source: Source,
   now: Date
-) {
+): PushMessage | null {
   const iso = now.toISOString();
 
   const open =
@@ -457,6 +468,83 @@ function notify(
       lessonId: source.lessonId,
     })
     .run();
+
+  if (!shouldPush(tx, fields.recipientId, fields.type)) return null;
+
+  const row = tx
+    .update(notifications)
+    .set({ pushed: true })
+    .where(eq(notifications.id, notificationId))
+    .returning()
+    .get();
+  return pushMessageFor(row);
+}
+
+// ─── Channel decision ───
+// Which push event type each Notification type belongs to. Null means the
+// type is in-app only. Types not switched to push yet are null too, so
+// switching one on is a one-line change here.
+const PUSH_EVENT_FOR: Record<NotificationType, PushEventType | null> = {
+  [NotificationType.Reply]: PushEventType.Reply,
+  [NotificationType.Question]: null,
+  [NotificationType.Announcement]: null,
+  [NotificationType.RefundDecision]: null,
+  [NotificationType.RefundRequest]: null,
+  [NotificationType.Purchase]: null,
+  [NotificationType.EnrollmentGained]: null,
+  [NotificationType.EnrollmentEnded]: null,
+  [NotificationType.SeatClaimed]: null,
+};
+
+// Push when the event's channel includes push, the person hasn't muted that
+// event type, and they have at least one device.
+function shouldPush(
+  tx: Queryable,
+  userId: number,
+  type: NotificationType
+): boolean {
+  const eventType = PUSH_EVENT_FOR[type];
+  if (eventType === null) return false;
+  if (isMuted(tx, userId, eventType)) return false;
+  return hasDevice(tx, userId);
+}
+
+function isMuted(tx: Queryable, userId: number, eventType: PushEventType) {
+  return (
+    tx
+      .select({ id: pushPreferences.id })
+      .from(pushPreferences)
+      .where(
+        and(
+          eq(pushPreferences.userId, userId),
+          eq(pushPreferences.eventType, eventType)
+        )
+      )
+      .get() !== undefined
+  );
+}
+
+function hasDevice(tx: Queryable, userId: number) {
+  return (
+    tx
+      .select({ id: pushSubscriptions.id })
+      .from(pushSubscriptions)
+      .where(eq(pushSubscriptions.userId, userId))
+      .get() !== undefined
+  );
+}
+
+// Lock-screen text says only what happened and where: the bell title and the
+// course. It never includes comment text or notes. The tag is the bundle key,
+// so a bundle replaces its earlier push, or else a key unique to the row.
+function pushMessageFor(row: NotificationRow): PushMessage {
+  return {
+    userId: row.recipientId,
+    title: titleFor(row),
+    body: row.courseTitle ?? "",
+    tag: row.bundleKey ?? `notification:${row.id}`,
+    url: row.destinationUrl,
+  };
 }
 
 // ─── Reading the bell ───
@@ -606,6 +694,197 @@ export function markAllNotificationsRead(
       and(eq(notifications.recipientId, userId), isNull(notifications.readAt))
     )
     .run();
+}
+
+// ─── Push settings ───
+// Devices are a person's push subscriptions. Every function here acts only on
+// the given person's own data.
+
+export type NewPushSubscription = {
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  deviceName: string;
+};
+
+// Saves this browser's subscription for the person. An endpoint belongs to
+// one browser, so saving it again (new keys, or another person signed in on
+// the same browser) moves it to this person.
+export function savePushSubscription(
+  db: Db,
+  userId: number,
+  subscription: NewPushSubscription,
+  now: Date
+): void {
+  db.insert(pushSubscriptions)
+    .values({ userId, ...subscription, createdAt: now.toISOString() })
+    .onConflictDoUpdate({
+      target: pushSubscriptions.endpoint,
+      set: {
+        userId,
+        p256dh: subscription.p256dh,
+        auth: subscription.auth,
+        deviceName: subscription.deviceName,
+      },
+    })
+    .run();
+}
+
+export { pushEventTypesFor } from "~/lib/push";
+
+export type PushPreferences = Record<PushEventType, boolean>;
+
+// Every event type is on unless the person muted it. Muting stops only the
+// phone buzz; the bell still gets everything.
+export function getPushPreferences(db: Db, userId: number): PushPreferences {
+  const muted = new Set(
+    db
+      .select({ eventType: pushPreferences.eventType })
+      .from(pushPreferences)
+      .where(eq(pushPreferences.userId, userId))
+      .all()
+      .map((row) => row.eventType)
+  );
+  const preferences = {} as PushPreferences;
+  for (const eventType of Object.values(PushEventType)) {
+    preferences[eventType] = !muted.has(eventType);
+  }
+  return preferences;
+}
+
+// One choice per event type, applying to all of the person's devices.
+export function setPushPreference(
+  db: Db,
+  userId: number,
+  eventType: PushEventType,
+  enabled: boolean
+): void {
+  if (enabled) {
+    db.delete(pushPreferences)
+      .where(
+        and(
+          eq(pushPreferences.userId, userId),
+          eq(pushPreferences.eventType, eventType)
+        )
+      )
+      .run();
+  } else {
+    db.insert(pushPreferences)
+      .values({ userId, eventType })
+      .onConflictDoNothing()
+      .run();
+  }
+}
+
+export type PushDevice = {
+  id: number;
+  endpoint: string;
+  deviceName: string;
+  createdAt: string;
+};
+
+export function listPushDevices(db: Db, userId: number): PushDevice[] {
+  return db
+    .select({
+      id: pushSubscriptions.id,
+      endpoint: pushSubscriptions.endpoint,
+      deviceName: pushSubscriptions.deviceName,
+      createdAt: pushSubscriptions.createdAt,
+    })
+    .from(pushSubscriptions)
+    .where(eq(pushSubscriptions.userId, userId))
+    .orderBy(pushSubscriptions.id)
+    .all();
+}
+
+// Removes one of the person's devices: this browser (by endpoint) or one from
+// the device list (by id, "Stop sending").
+export function removePushSubscription(
+  db: Db,
+  userId: number,
+  device: { endpoint: string } | { id: number }
+): void {
+  const match =
+    "endpoint" in device
+      ? eq(pushSubscriptions.endpoint, device.endpoint)
+      : eq(pushSubscriptions.id, device.id);
+  db.delete(pushSubscriptions)
+    .where(and(eq(pushSubscriptions.userId, userId), match))
+    .run();
+}
+
+// The push sent to the device that has just turned push on.
+export function testPushMessage(userId: number, endpoint: string): PushMessage {
+  return {
+    userId,
+    title: "Phone notifications are on",
+    body: "This is what Cadence notifications look like.",
+    tag: "test",
+    url: "/",
+    endpoint,
+  };
+}
+
+// ─── Delivering push ───
+
+export type DeliveryReport = { delivered: number; gone: number; failed: number };
+
+// Sends each message to every device of its recipient (or only the one it
+// names) and deletes devices the push service reports gone (404/410).
+// Failures are logged and never thrown, so push never fails the person's
+// action.
+export async function deliverPushMessages(
+  db: Db,
+  messages: PushMessage[],
+  transport: PushTransport = defaultPushTransport()
+): Promise<DeliveryReport> {
+  const report: DeliveryReport = { delivered: 0, gone: 0, failed: 0 };
+
+  for (const message of messages) {
+    const devices = db
+      .select()
+      .from(pushSubscriptions)
+      .where(
+        and(
+          eq(pushSubscriptions.userId, message.userId),
+          message.endpoint === undefined
+            ? undefined
+            : eq(pushSubscriptions.endpoint, message.endpoint)
+        )
+      )
+      .all();
+    const payload = {
+      title: message.title,
+      body: message.body,
+      tag: message.tag,
+      url: message.url,
+    };
+
+    const outcomes = await Promise.all(
+      devices.map(async (device) => {
+        try {
+          return await transport.send(device, payload);
+        } catch (error) {
+          console.error(`Push to device ${device.id} failed`, error);
+          return "failed" as const;
+        }
+      })
+    );
+
+    outcomes.forEach((outcome, i) => {
+      report[outcome] += 1;
+      if (outcome === "gone") {
+        db.delete(pushSubscriptions)
+          .where(eq(pushSubscriptions.id, devices[i].id))
+          .run();
+      }
+    });
+  }
+
+  if (report.failed > 0) {
+    console.error(`${report.failed} push message(s) could not be delivered`);
+  }
+  return report;
 }
 
 // ─── Business activity (#16) ───

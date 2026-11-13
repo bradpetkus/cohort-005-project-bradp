@@ -15,6 +15,11 @@ import {
 import { NotificationType } from "~/db/schema";
 import type { BellRow } from "~/lib/notifications.server";
 import { cn, formatRelativeTime } from "~/lib/utils";
+import {
+  PushStrip,
+  PushWaitingDot,
+  usePushDevice,
+} from "~/components/push-strip";
 
 // The bell in the sidebar header. Its count and rows come from the app layout
 // loader, so they refresh on every navigation and action.
@@ -54,10 +59,14 @@ export function UnreadBadge({
 export function NotificationBell({
   unreadCount,
   rows,
+  pushPublicKey = null,
 }: {
   unreadCount: number;
   rows: BellRow[];
+  // VAPID public key; null when phone push isn't configured.
+  pushPublicKey?: string | null;
 }) {
+  const push = usePushDevice(pushPublicKey);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const markAll = useFetcher();
@@ -96,6 +105,7 @@ export function NotificationBell({
       >
         <Bell className="size-5" />
         <UnreadBadge count={unreadCount} className="absolute -right-1 -top-1" />
+        <PushWaitingDot push={push} />
       </button>
 
       {open && (
@@ -113,6 +123,8 @@ export function NotificationBell({
               </button>
             </markAll.Form>
           </div>
+
+          <PushStrip push={push} />
 
           {rows.length === 0 ? (
             <p className="px-4 py-10 text-center text-sm text-muted-foreground">

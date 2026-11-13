@@ -6,6 +6,7 @@ import { AnnouncementTargetKind } from "~/db/schema";
 import { requireStaff } from "~/lib/access.server";
 import {
   ANNOUNCEMENT_NOTE_MAX,
+  deliverPushMessages,
   listAnnouncements,
   previewAnnouncement,
   sendAnnouncement,
@@ -94,6 +95,7 @@ export async function action({ params, request }: Route.ActionArgs) {
       { status: result.status }
     );
   }
-  // Push for Announcements is delivered from here once #22 lands.
+  // Empty until #22 switches Announcements to push.
+  await deliverPushMessages(db, result.pushMessages);
   return { ok: true as const, reachedCount: result.reachedCount };
 }
