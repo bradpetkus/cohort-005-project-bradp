@@ -1,14 +1,18 @@
-import { and, desc, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
 import {
   comments,
+  coupons,
   courses,
   lessons,
   modules,
   notifications,
   notificationSources,
+  purchases,
+  refunds,
   users,
+  UserRole,
   NotificationSourceKind,
   NotificationType,
 } from "~/db/schema";
@@ -29,10 +33,12 @@ type Queryable = Db | Tx;
 
 // ─── Domain events ───
 
-export type NotificationEvent = {
-  type: "comment_reply";
-  commentId: number;
-};
+export type NotificationEvent =
+  | {
+      type: "comment_reply";
+      commentId: number;
+    }
+  | RefundNotificationEvent;
 
 export type PushMessage = {
   userId: number;
@@ -52,6 +58,10 @@ export function recordNotificationEvent(
   switch (event.type) {
     case "comment_reply":
       return recordReply(db, event.commentId, now);
+    case "refund_requested":
+      return recordRefundRequested(db, event.refundRequestId, now);
+    case "refund_decided":
+      return recordRefundDecided(db, event, now);
   }
 }
 
@@ -127,6 +137,184 @@ function recordReply(db: Db, commentId: number, now: Date): RecordResult {
 // Reply `detail`: is the recipient the thread's top-level author?
 const REPLY_ON_OWN = "own_comment";
 const REPLY_IN_THREAD = "thread";
+
+// ─── Refund Requests ───
+
+export type RefundNotificationEvent =
+  | { type: "refund_requested"; refundRequestId: number }
+  | {
+      type: "refund_decided";
+      refundRequestId: number;
+      decision: "approved" | "declined";
+      // From the approve result: true only when the buyer's Enrollment was
+      // really removed (docs/adr/0004).
+      enrollmentEnded: boolean;
+    };
+
+function getRefundRequest(db: Db, refundRequestId: number) {
+  return db
+    .select({
+      id: refunds.id,
+      purchaseId: purchases.id,
+      buyerId: purchases.userId,
+      buyerName: users.name,
+      courseId: courses.id,
+      courseTitle: courses.title,
+      instructorId: courses.instructorId,
+      deciderId: refunds.resolvedByUserId,
+      decisionNote: refunds.decisionNote,
+    })
+    .from(refunds)
+    .innerJoin(purchases, eq(purchases.id, refunds.purchaseId))
+    .innerJoin(users, eq(users.id, purchases.userId))
+    .innerJoin(courses, eq(courses.id, purchases.courseId))
+    .where(eq(refunds.id, refundRequestId))
+    .get();
+}
+
+// Every Platform Admin but the buyer gets their own row: never bundled, so
+// each decision stays separate.
+function recordRefundRequested(
+  db: Db,
+  refundRequestId: number,
+  now: Date
+): RecordResult {
+  const request = getRefundRequest(db, refundRequestId);
+  if (!request) return { pushMessages: [] };
+
+  const admins = db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.role, UserRole.Admin))
+    .all()
+    .map((u) => u.id)
+    .filter((id) => id !== request.buyerId);
+
+  db.transaction((tx) => {
+    for (const recipientId of admins) {
+      notify(
+        tx,
+        {
+          recipientId,
+          type: NotificationType.RefundRequest,
+          bundleKey: null,
+          actorName: request.buyerName,
+          courseTitle: request.courseTitle,
+          subjectTitle: null,
+          detail: null,
+          note: null,
+          destinationUrl: "/admin/refunds",
+        },
+        {
+          kind: NotificationSourceKind.RefundRequest,
+          id: request.id,
+          lessonId: null,
+        },
+        now
+      );
+    }
+  });
+
+  return { pushMessages: [] };
+}
+
+// The buyer (Student or Team Admin) hears the outcome, with the note.
+function recordRefundDecided(
+  db: Db,
+  event: Extract<RefundNotificationEvent, { type: "refund_decided" }>,
+  now: Date
+): RecordResult {
+  const request = getRefundRequest(db, event.refundRequestId);
+  if (!request) return { pushMessages: [] };
+
+  // A Purchase with Seats is a Team Licence, whose buyer is its Team Admin.
+  const isTeamLicence =
+    db
+      .select({ id: coupons.id })
+      .from(coupons)
+      .where(eq(coupons.purchaseId, request.purchaseId))
+      .get() !== undefined;
+
+  const source = {
+    kind: NotificationSourceKind.RefundRequest,
+    id: request.id,
+    lessonId: null,
+  };
+
+  db.transaction((tx) => {
+    // The request is done, so no Platform Admin needs to open it any more.
+    // The decider's own row goes too: they've just handled it.
+    tx.update(notifications)
+      .set({ readAt: now.toISOString() })
+      .where(
+        and(
+          eq(notifications.type, NotificationType.RefundRequest),
+          isNull(notifications.readAt),
+          inArray(
+            notifications.id,
+            tx
+              .select({ id: notificationSources.notificationId })
+              .from(notificationSources)
+              .where(
+                and(
+                  eq(
+                    notificationSources.sourceKind,
+                    NotificationSourceKind.RefundRequest
+                  ),
+                  eq(notificationSources.sourceId, request.id)
+                )
+              )
+          )
+        )
+      )
+      .run();
+
+    if (request.buyerId !== request.deciderId) {
+      notify(
+        tx,
+        {
+          recipientId: request.buyerId,
+          type: NotificationType.RefundDecision,
+          bundleKey: null,
+          actorName: null,
+          courseTitle: request.courseTitle,
+          subjectTitle: null,
+          detail: event.decision,
+          note: request.decisionNote,
+          destinationUrl: isTeamLicence ? "/team" : "/settings",
+        },
+        source,
+        now
+      );
+    }
+
+    // In-app only, never bundled.
+    if (
+      event.decision === "approved" &&
+      event.enrollmentEnded &&
+      request.instructorId !== request.deciderId
+    ) {
+      notify(
+        tx,
+        {
+          recipientId: request.instructorId,
+          type: NotificationType.EnrollmentEnded,
+          bundleKey: null,
+          actorName: request.buyerName,
+          courseTitle: request.courseTitle,
+          subjectTitle: null,
+          detail: null,
+          note: null,
+          destinationUrl: `/instructor/${request.courseId}/students`,
+        },
+        source,
+        now
+      );
+    }
+  });
+
+  return { pushMessages: [] };
+}
 
 // ─── Creating and merging bell rows ───
 
@@ -221,8 +409,23 @@ function titleFor(row: NotificationRow): string {
       }
       return `${row.actorName} replied ${row.detail === REPLY_ON_OWN ? "to" : "in"} ${where}`;
     }
+    case NotificationType.RefundRequest:
+      return `${row.actorName} requested a refund for ${row.courseTitle}`;
+    case NotificationType.RefundDecision:
+      return `Your Refund Request for ${row.courseTitle} was ${row.detail}`;
+    case NotificationType.EnrollmentEnded:
+      return `${row.actorName} left ${row.courseTitle} after a refund`;
     default:
       return "";
+  }
+}
+
+function snippetFor(row: NotificationRow): string {
+  switch (row.type) {
+    case NotificationType.RefundDecision:
+      return row.note ?? row.courseTitle ?? "";
+    default:
+      return row.courseTitle ?? "";
   }
 }
 
@@ -254,7 +457,7 @@ export function listBell(db: Db, userId: number): BellRow[] {
       id: row.id,
       type: row.type,
       title: titleFor(row),
-      snippet: row.courseTitle ?? "",
+      snippet: snippetFor(row),
       lastEventAt: row.lastEventAt,
       unread: row.readAt === null,
       pushed: row.pushed,
