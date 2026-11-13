@@ -17,6 +17,10 @@ import {
   quizAnswers,
 } from "~/db/schema";
 import { db } from "~/db";
+import {
+  deleteWithNotifications,
+  type Queryable,
+} from "~/lib/notifications.server";
 import { eq, sql } from "drizzle-orm";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -137,15 +141,6 @@ function getQuizByLessonId(lessonId: number) {
   return db.select().from(quizzes).where(eq(quizzes.lessonId, lessonId)).get();
 }
 
-function getQuestionsByQuiz(quizId: number) {
-  return db
-    .select()
-    .from(quizQuestions)
-    .where(eq(quizQuestions.quizId, quizId))
-    .orderBy(quizQuestions.position)
-    .all();
-}
-
 function getQuizWithQuestions(quizId: number) {
   const quiz = getQuizById(quizId);
   if (!quiz) return null;
@@ -198,25 +193,29 @@ function updateQuiz(
     .get();
 }
 
-function deleteQuiz(id: number) {
+function deleteQuiz(id: number, q: Queryable = db) {
   // Cascade: delete answers -> attempts -> options -> questions -> quiz
-  const questions = getQuestionsByQuiz(id);
+  const questions = q
+    .select({ id: quizQuestions.id })
+    .from(quizQuestions)
+    .where(eq(quizQuestions.quizId, id))
+    .all();
   for (const question of questions) {
-    db.delete(quizOptions).where(eq(quizOptions.questionId, question.id)).run();
+    q.delete(quizOptions).where(eq(quizOptions.questionId, question.id)).run();
   }
 
-  const attempts = db
+  const attempts = q
     .select()
     .from(quizAttempts)
     .where(eq(quizAttempts.quizId, id))
     .all();
   for (const attempt of attempts) {
-    db.delete(quizAnswers).where(eq(quizAnswers.attemptId, attempt.id)).run();
+    q.delete(quizAnswers).where(eq(quizAnswers.attemptId, attempt.id)).run();
   }
 
-  db.delete(quizAttempts).where(eq(quizAttempts.quizId, id)).run();
-  db.delete(quizQuestions).where(eq(quizQuestions.quizId, id)).run();
-  return db.delete(quizzes).where(eq(quizzes.id, id)).returning().get();
+  q.delete(quizAttempts).where(eq(quizAttempts.quizId, id)).run();
+  q.delete(quizQuestions).where(eq(quizQuestions.quizId, id)).run();
+  return q.delete(quizzes).where(eq(quizzes.id, id)).returning().get();
 }
 
 function createQuestion(
@@ -425,7 +424,11 @@ export async function action({ params, request }: Route.ActionArgs) {
   if (intent === "delete-quiz") {
     const existingQuiz = getQuizByLessonId(lessonId);
     if (existingQuiz) {
-      deleteQuiz(existingQuiz.id);
+      // Only a real delete: save-quiz re-creates the quiz and must leave its
+      // Announcements alone.
+      deleteWithNotifications(db, { type: "quiz_deleted", lessonId }, (tx) =>
+        deleteQuiz(existingQuiz.id, tx)
+      );
     }
     return { success: true, deleted: true };
   }

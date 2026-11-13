@@ -12,6 +12,10 @@ import { getCurrentUserId } from "~/lib/session";
 import { CourseStatus, UserRole } from "~/db/schema";
 import { db } from "~/db";
 import {
+  deleteWithNotifications,
+  type Tx,
+} from "~/lib/notifications.server";
+import {
   courses,
   categories,
   users,
@@ -54,7 +58,13 @@ import {
   Award,
   Globe,
   FileText,
+  Megaphone,
 } from "lucide-react";
+import {
+  AnnouncementsTab,
+  type AnnouncementTargetOption,
+} from "~/components/announcements-tab";
+import { AnnouncementTargetKind } from "~/db/schema";
 import { data, isRouteErrorResponse } from "react-router";
 import { z } from "zod";
 import { parseFormData, parseParams } from "~/lib/validation";
@@ -233,10 +243,10 @@ function updateModuleTitle(id: number, title: string) {
     .get();
 }
 
-function deleteModule(id: number) {
+function deleteModule(tx: Tx, id: number) {
   // Delete all lessons in this module first
-  db.delete(lessons).where(eq(lessons.moduleId, id)).run();
-  return db.delete(modules).where(eq(modules.id, id)).returning().get();
+  tx.delete(lessons).where(eq(lessons.moduleId, id)).run();
+  return tx.delete(modules).where(eq(modules.id, id)).returning().get();
 }
 
 function reorderModules(courseId: number, moduleIds: number[]) {
@@ -301,8 +311,8 @@ function updateLessonTitle(id: number, title: string) {
     .get();
 }
 
-function deleteLesson(id: number) {
-  return db.delete(lessons).where(eq(lessons.id, id)).returning().get();
+function deleteLesson(tx: Tx, id: number) {
+  return tx.delete(lessons).where(eq(lessons.id, id)).returning().get();
 }
 
 function reorderLessons(moduleId: number, lessonIds: number[]) {
@@ -639,7 +649,14 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
   const quizCount = lessonQuizzes.length;
 
-  return { course, lessonCount, enrollmentCount, students, quizCount };
+  return {
+    course,
+    lessonCount,
+    enrollmentCount,
+    students,
+    quizCount,
+    lessonQuizzes,
+  };
 }
 
 export async function action({ params, request }: Route.ActionArgs) {
@@ -746,7 +763,9 @@ export async function action({ params, request }: Route.ActionArgs) {
         { status: 404 }
       );
     }
-    deleteModule(moduleId);
+    deleteWithNotifications(db, { type: "module_deleted", moduleId }, (tx) =>
+      deleteModule(tx, moduleId)
+    );
     return { success: true, field: "module" };
   }
 
@@ -837,7 +856,9 @@ export async function action({ params, request }: Route.ActionArgs) {
         { status: 404 }
       );
     }
-    deleteLesson(lessonId);
+    deleteWithNotifications(db, { type: "lesson_deleted", lessonId }, (tx) =>
+      deleteLesson(tx, lessonId)
+    );
     return { success: true, field: "lesson" };
   }
 
@@ -1492,8 +1513,38 @@ function statusBadgeColor(status: string) {
 export default function InstructorCourseEditor({
   loaderData,
 }: Route.ComponentProps) {
-  const { course, lessonCount, enrollmentCount, students, quizCount } =
-    loaderData;
+  const {
+    course,
+    lessonCount,
+    enrollmentCount,
+    students,
+    quizCount,
+    lessonQuizzes,
+  } = loaderData;
+  // The Announcements picker: every lesson, each followed by its quiz.
+  const announcementTargets: AnnouncementTargetOption[] =
+    course.modules.flatMap((mod) =>
+      mod.lessons.flatMap((lesson) => {
+        const quiz = lessonQuizzes.find((q) => q.lessonId === lesson.id);
+        const lessonTarget = {
+          kind: AnnouncementTargetKind.Lesson,
+          lessonId: lesson.id,
+          title: lesson.title,
+          moduleTitle: mod.title,
+        };
+        return quiz
+          ? [
+              lessonTarget,
+              {
+                kind: AnnouncementTargetKind.Quiz,
+                lessonId: lesson.id,
+                title: quiz.quizTitle,
+                moduleTitle: mod.title,
+              },
+            ]
+          : [lessonTarget];
+      })
+    );
   const statusFetcher = useFetcher();
   const reorderFetcher = useFetcher();
   const lessonReorderFetcher = useFetcher();
@@ -1714,7 +1765,18 @@ export default function InstructorCourseEditor({
             <Users className="size-4" />
             Students
           </TabsTrigger>
+          <TabsTrigger value="announcements">
+            <Megaphone className="size-4" />
+            Announcements
+          </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="announcements" className="mt-6">
+          <AnnouncementsTab
+            courseId={course.id}
+            targets={announcementTargets}
+          />
+        </TabsContent>
 
         {/* Content Tab */}
         <TabsContent value="content" className="mt-6">
@@ -2223,9 +2285,12 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
 
   if (isRouteErrorResponse(error)) {
     if (error.status === 404) {
-      title = "Course not found";
+      // Also shows the Announcements tab's thrown 404s, so keep the reason.
+      title = "Not found";
       message =
-        "The course you're looking for doesn't exist or may have been removed.";
+        typeof error.data === "string"
+          ? error.data
+          : "The course you're looking for doesn't exist or may have been removed.";
     } else if (error.status === 401) {
       title = "Sign in required";
       message =

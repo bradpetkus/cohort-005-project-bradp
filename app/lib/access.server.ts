@@ -131,16 +131,22 @@ export async function getAccess(
   };
 }
 
+/** The 401 every require* guard throws when no one is signed in. */
+function signedOut() {
+  return data("Select a user from the DevUI panel.", { status: 401 });
+}
+
 /**
  * Throws 401 unless someone is signed in. Returns their user id.
  */
 export async function requireUserId(request: Request): Promise<number> {
   const userId = await getCurrentUserId(request);
-  if (!userId) {
-    throw data("Select a user from the DevUI panel.", { status: 401 });
-  }
+  if (!userId) throw signedOut();
   return userId;
 }
+
+/** Access for someone who is signed in. */
+export type SignedInAccess = Access & { userId: number };
 
 /**
  * Throws 401 when signed out, 403 when the user can't see the course's content.
@@ -152,9 +158,7 @@ export async function requireContentAccess(
 ): Promise<Access> {
   const access = await getAccess(request, courseId);
 
-  if (!access.userId) {
-    throw data("Select a user from the DevUI panel.", { status: 401 });
-  }
+  if (!access.userId) throw signedOut();
 
   if (!access.canViewContent) {
     throw data("You must be enrolled in this course.", { status: 403 });
@@ -169,18 +173,16 @@ export async function requireContentAccess(
 export async function requireStaff(
   request: Request,
   courseId: number
-): Promise<Access> {
-  const access = await getAccess(request, courseId);
+): Promise<SignedInAccess> {
+  const { userId, ...access } = await getAccess(request, courseId);
 
-  if (!access.userId) {
-    throw data("Select a user from the DevUI panel.", { status: 401 });
-  }
+  if (!userId) throw signedOut();
 
   if (!access.isStaff) {
     throw data("Only this course's instructor can do that.", { status: 403 });
   }
 
-  return access;
+  return { ...access, userId };
 }
 
 /**

@@ -32,7 +32,7 @@ export enum QuestionType {
 }
 
 export enum RefundStatus {
-  Requested = "requested",
+  Open = "open",
   Approved = "approved",
   Declined = "declined",
 }
@@ -239,8 +239,8 @@ export const refunds = sqliteTable(
     status: text("status")
       .notNull()
       .$type<RefundStatus>()
-      .default(RefundStatus.Requested),
-    // The learner's own words, in the box on the course page.
+      .default(RefundStatus.Open),
+    // The student's own words, in the box on the course page.
     reason: text("reason").notNull(),
     // Null until someone approves — a declined request refunds nothing.
     amountRefunded: integer("amount_refunded"),
@@ -249,6 +249,9 @@ export const refunds = sqliteTable(
       .$defaultFn(() => new Date().toISOString()),
     resolvedAt: text("resolved_at"),
     resolvedByUserId: integer("resolved_by_user_id").references(() => users.id),
+    // The Platform Admin's note to the buyer. Required on a decline, optional
+    // on an approval. Enforced on write.
+    decisionNote: text("decision_note"),
   },
   (table) => [index("refunds_purchase_idx").on(table.purchaseId)]
 );
@@ -288,6 +291,9 @@ export const coupons = sqliteTable("coupons", {
     .references(() => purchases.id),
   redeemedByUserId: integer("redeemed_by_user_id").references(() => users.id),
   redeemedAt: text("redeemed_at"),
+  // Set on every Unclaimed Seat when its Team Licence's Refund Request is
+  // approved. The Seat can never be claimed after that.
+  refundedAt: text("refunded_at"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -368,3 +374,186 @@ export const videoWatchEvents = sqliteTable("video_watch_events", {
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });
+
+// ─── Notifications ───
+// One migration holds every table for the Notifications PRD (#12). See
+// GLOSSARY.md for Notification and Announcement.
+//
+// Nothing here has an FK into comments or quizzes, and notification rows have
+// none into lessons. Lessons, quizzes and modules are hard-deleted, and
+// quizzes get a new id on every save, so an FK would block those writes.
+// Sources are a polymorphic (kind, id) pair instead, cleaned up by the
+// notifications module.
+
+export enum NotificationType {
+  Reply = "reply",
+  Question = "question",
+  Announcement = "announcement",
+  RefundDecision = "refund_decision",
+  RefundRequest = "refund_request",
+  Purchase = "purchase",
+  EnrollmentGained = "enrollment_gained",
+  EnrollmentEnded = "enrollment_ended",
+  SeatClaimed = "seat_claimed",
+}
+
+// What a notification_sources row points at. No FK; see above.
+export enum NotificationSourceKind {
+  Comment = "comment",
+  Announcement = "announcement",
+  RefundRequest = "refund_request",
+  Purchase = "purchase",
+  Enrollment = "enrollment",
+  Seat = "seat",
+}
+
+// The push event types a person can mute.
+export enum PushEventType {
+  Reply = "reply",
+  Question = "question",
+  Announcement = "announcement",
+  RefundDecision = "refund_decision",
+  RefundRequest = "refund_request",
+}
+
+// What an Announcement points at. A lesson has at most one quiz, and a quiz
+// gets a new id on every save, so a quiz Announcement is keyed by its lesson.
+export enum AnnouncementTargetKind {
+  Lesson = "lesson",
+  Quiz = "quiz",
+}
+
+// One row per bell row. A bundled row stands for eventCount events.
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    recipientId: integer("recipient_id")
+      .notNull()
+      .references(() => users.id),
+    type: text("type").notNull().$type<NotificationType>(),
+    // Null for types that never bundle. A new event merges only into the
+    // recipient's unread row with the same key.
+    bundleKey: text("bundle_key"),
+    eventCount: integer("event_count").notNull().default(1),
+    // Display fields captured when the row is created (and moved to the latest
+    // event on a merge), so the wording never changes when a source is
+    // edited. Comment text is never stored.
+    actorName: text("actor_name"),
+    courseTitle: text("course_title"),
+    // The lesson or quiz title.
+    subjectTitle: text("subject_title"),
+    // A type-specific variant, e.g. whether a reply is on the recipient's own
+    // comment, or a refund decision's outcome.
+    detail: text("detail"),
+    // Announcement note or decision note. Shown in the bell, never pushed.
+    note: text("note"),
+    // An internal path, never an absolute URL.
+    destinationUrl: text("destination_url").notNull(),
+    pushed: integer("pushed", { mode: "boolean" }).notNull().default(false),
+    readAt: text("read_at"),
+    createdAt: text("created_at").notNull(),
+    // Rows sort by this.
+    lastEventAt: text("last_event_at").notNull(),
+  },
+  (table) => [
+    index("notifications_recipient_read_idx").on(
+      table.recipientId,
+      table.readAt
+    ),
+    index("notifications_created_idx").on(table.createdAt),
+    index("notifications_recipient_bundle_idx").on(
+      table.recipientId,
+      table.bundleKey
+    ),
+  ]
+);
+
+// One row per underlying event in a bell row.
+export const notificationSources = sqliteTable(
+  "notification_sources",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    notificationId: integer("notification_id")
+      .notNull()
+      .references(() => notifications.id, { onDelete: "cascade" }),
+    sourceKind: text("source_kind").notNull().$type<NotificationSourceKind>(),
+    sourceId: integer("source_id").notNull(),
+    // The lesson this source sits under (comments, Announcements), so deleting
+    // a lesson, quiz or module still finds its rows once the comments or quiz
+    // are gone. No FK.
+    lessonId: integer("lesson_id"),
+  },
+  (table) => [
+    index("notification_sources_notification_idx").on(table.notificationId),
+    index("notification_sources_source_idx").on(
+      table.sourceKind,
+      table.sourceId
+    ),
+    index("notification_sources_lesson_idx").on(table.lessonId),
+  ]
+);
+
+export const announcements = sqliteTable(
+  "announcements",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    courseId: integer("course_id")
+      .notNull()
+      .references(() => courses.id),
+    senderId: integer("sender_id")
+      .notNull()
+      .references(() => users.id),
+    targetKind: text("target_kind").notNull().$type<AnnouncementTargetKind>(),
+    // The lesson, or the lesson whose quiz is announced. Hard-deleting the
+    // lesson deletes its Announcements (but not their Notifications: the
+    // notifications module removes those first).
+    lessonId: integer("lesson_id")
+      .notNull()
+      .references(() => lessons.id, { onDelete: "cascade" }),
+    // At most 280 chars. Enforced on write.
+    note: text("note"),
+    sentAt: text("sent_at").notNull(),
+    reachedCount: integer("reached_count").notNull(),
+  },
+  (table) => [
+    index("announcements_course_idx").on(table.courseId),
+    index("announcements_lesson_idx").on(table.lessonId),
+  ]
+);
+
+export const pushSubscriptions = sqliteTable(
+  "push_subscriptions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id),
+    // A capability URL. Treat it as a secret.
+    endpoint: text("endpoint").notNull().unique(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    deviceName: text("device_name").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [index("push_subscriptions_user_idx").on(table.userId)]
+);
+
+// Only muted (user, event type) pairs are stored, so every push event type is
+// on by default, including ones added later.
+export const pushPreferences = sqliteTable(
+  "push_preferences",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id),
+    eventType: text("event_type").notNull().$type<PushEventType>(),
+  },
+  (table) => [
+    uniqueIndex("push_preferences_user_event_unique").on(
+      table.userId,
+      table.eventType
+    ),
+  ]
+);

@@ -2,6 +2,9 @@ import { Outlet } from "react-router";
 import type { Route } from "./+types/layout.app";
 import { Sidebar } from "~/components/sidebar";
 import { DevUI } from "~/components/dev-ui";
+import { LiveBell } from "~/components/live-bell";
+import { getUnreadCount, listBell } from "~/lib/notifications.server";
+import { vapidPublicKey } from "~/lib/push.server";
 import { Toaster } from "sonner";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
@@ -213,6 +216,16 @@ export async function loader({ request }: Route.LoaderArgs) {
     countryTierInfo,
     countries: COUNTRIES,
     isTeamAdmin: currentUserId ? isTeamAdmin(currentUserId) : false,
+    // Re-read on every navigation and action, so the badge stays current.
+    // Never revalidate this loader on an interval: it's heavy.
+    bell: currentUser
+      ? {
+          unreadCount: getUnreadCount(db, currentUser.id),
+          rows: listBell(db, currentUser.id),
+        }
+      : null,
+    // The browser subscribes with this; null when phone push isn't set up.
+    pushPublicKey: vapidPublicKey(),
   };
 }
 
@@ -225,6 +238,8 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countryTierInfo,
     countries,
     isTeamAdmin: userIsTeamAdmin,
+    bell,
+    pushPublicKey,
   } = loaderData;
 
   return (
@@ -233,6 +248,15 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
+        headerSlot={
+          bell ? (
+            <LiveBell
+              unreadCount={bell.unreadCount}
+              rows={bell.rows}
+              pushPublicKey={pushPublicKey}
+            />
+          ) : null
+        }
       />
       <main className="flex-1 overflow-y-auto">
         <Outlet />

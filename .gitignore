@@ -31,3 +31,8 @@
 # Generated reports. Each file is local to one machine.
 reports/
 
+# Emails written locally instead of sent
+.outbox/
+
+# Phone push messages written locally instead of sent (no VAPID keys)
+.push-outbox/
