@@ -1,14 +1,19 @@
-import { and, desc, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, ne, sql } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
 import {
+  announcements,
   comments,
   courses,
+  enrollments,
+  lessonProgress,
   lessons,
   modules,
   notifications,
   notificationSources,
+  quizzes,
   users,
+  AnnouncementTargetKind,
   NotificationSourceKind,
   NotificationType,
 } from "~/db/schema";
@@ -29,10 +34,9 @@ type Queryable = Db | Tx;
 
 // ─── Domain events ───
 
-export type NotificationEvent = {
-  type: "comment_reply";
-  commentId: number;
-};
+export type NotificationEvent =
+  | { type: "comment_reply"; commentId: number }
+  | { type: "announcement_sent"; announcementId: number };
 
 export type PushMessage = {
   userId: number;
@@ -52,6 +56,8 @@ export function recordNotificationEvent(
   switch (event.type) {
     case "comment_reply":
       return recordReply(db, event.commentId, now);
+    case "announcement_sent":
+      return recordAnnouncement(db, event.announcementId, now);
   }
 }
 
@@ -221,9 +227,22 @@ function titleFor(row: NotificationRow): string {
       }
       return `${row.actorName} replied ${row.detail === REPLY_ON_OWN ? "to" : "in"} ${where}`;
     }
+    case NotificationType.Announcement:
+      return announcementBellTitle(
+        row.actorName ?? "",
+        row.detail === AnnouncementTargetKind.Quiz
+          ? AnnouncementTargetKind.Quiz
+          : AnnouncementTargetKind.Lesson,
+        row.subjectTitle ?? ""
+      );
     default:
       return "";
   }
+}
+
+function snippetFor(row: NotificationRow): string {
+  if (row.type === NotificationType.Announcement && row.note) return row.note;
+  return row.courseTitle ?? "";
 }
 
 // The badge: every unread row, including ones past the dropdown's cap.
@@ -254,7 +273,7 @@ export function listBell(db: Db, userId: number): BellRow[] {
       id: row.id,
       type: row.type,
       title: titleFor(row),
-      snippet: row.courseTitle ?? "",
+      snippet: snippetFor(row),
       lastEventAt: row.lastEventAt,
       unread: row.readAt === null,
       pushed: row.pushed,
@@ -308,4 +327,350 @@ export function markAllNotificationsRead(
       and(eq(notifications.recipientId, userId), isNull(notifications.readAt))
     )
     .run();
+}
+
+// ─── Announcements ───
+// An Instructor points every Student with a current Enrollment at a lesson or
+// quiz. Lapsed Students and the sender never get it, and each Announcement is
+// its own bell row (never bundled). A quiz Announcement is stored by its
+// lesson, because a quiz gets a new id on every save.
+
+export type AnnouncementTarget = {
+  kind: AnnouncementTargetKind;
+  lessonId: number;
+};
+
+type Failure = { ok: false; status: number; error: string };
+
+export const ANNOUNCEMENT_NOTE_MAX = 280;
+
+// The bell row title, shared by the bell and the review step's preview.
+function announcementBellTitle(
+  senderName: string,
+  kind: AnnouncementTargetKind,
+  subjectTitle: string
+): string {
+  return kind === AnnouncementTargetKind.Quiz
+    ? `${senderName} pointed you to the quiz “${subjectTitle}”`
+    : `${senderName} pointed you to “${subjectTitle}”`;
+}
+
+type ResolvedTarget = {
+  subjectTitle: string;
+  courseTitle: string;
+  courseSlug: string;
+};
+
+// What the lesson or quiz is called now, or null if it isn't on the course.
+function resolveTarget(
+  db: Queryable,
+  courseId: number,
+  target: AnnouncementTarget
+): ResolvedTarget | null {
+  const lesson = db
+    .select({
+      title: lessons.title,
+      courseTitle: courses.title,
+      courseSlug: courses.slug,
+    })
+    .from(lessons)
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .innerJoin(courses, eq(courses.id, modules.courseId))
+    .where(and(eq(lessons.id, target.lessonId), eq(courses.id, courseId)))
+    .get();
+  if (!lesson) return null;
+
+  let subjectTitle = lesson.title;
+  if (target.kind === AnnouncementTargetKind.Quiz) {
+    const quiz = db
+      .select({ title: quizzes.title })
+      .from(quizzes)
+      .where(eq(quizzes.lessonId, target.lessonId))
+      .get();
+    if (!quiz) return null;
+    subjectTitle = quiz.title;
+  }
+  return {
+    subjectTitle,
+    courseTitle: lesson.courseTitle,
+    courseSlug: lesson.courseSlug,
+  };
+}
+
+// Students with a current Enrollment on the course, minus the sender.
+function currentStudents(db: Queryable, courseId: number, senderId: number) {
+  return db
+    .select({ id: users.id, name: users.name })
+    .from(enrollments)
+    .innerJoin(users, eq(users.id, enrollments.userId))
+    .where(
+      and(eq(enrollments.courseId, courseId), ne(enrollments.userId, senderId))
+    )
+    .orderBy(users.name)
+    .all();
+}
+
+// Lapsed Students: progress on the course's lessons but no Enrollment
+// (GLOSSARY.md). They never get the Announcement.
+function lapsedCount(db: Queryable, courseId: number, senderId: number) {
+  return (
+    db
+      .select({ count: sql<number>`count(distinct ${lessonProgress.userId})` })
+      .from(lessonProgress)
+      .innerJoin(lessons, eq(lessons.id, lessonProgress.lessonId))
+      .innerJoin(modules, eq(modules.id, lessons.moduleId))
+      .leftJoin(
+        enrollments,
+        and(
+          eq(enrollments.userId, lessonProgress.userId),
+          eq(enrollments.courseId, courseId)
+        )
+      )
+      .where(
+        and(
+          eq(modules.courseId, courseId),
+          isNull(enrollments.id),
+          ne(lessonProgress.userId, senderId)
+        )
+      )
+      .get()?.count ?? 0
+  );
+}
+
+// The lock-screen push for an Announcement. It says only what and where,
+// never the note (PRD #12, "Push content and privacy"). The review step
+// previews it, and push delivery (#22) sends it.
+export function announcementPushText(
+  subjectTitle: string,
+  courseTitle: string
+): { title: string; body: string } {
+  return { title: `New Announcement: ${subjectTitle} · ${courseTitle}`, body: "" };
+}
+
+export type AnnouncementPreview = {
+  ok: true;
+  recipients: { id: number; name: string }[];
+  lapsedCount: number;
+  // The latest earlier Announcement of the same lesson or quiz, if any.
+  lastAnnounced: { sentAt: string; reachedCount: number } | null;
+  bellRow: { title: string; snippet: string };
+  push: { title: string; body: string };
+};
+
+// The review step: who it reaches, who is left out, and what they'll see.
+export function previewAnnouncement(
+  db: Db,
+  input: SendAnnouncementInput
+): AnnouncementPreview | Failure {
+  const target = resolveTarget(db, input.courseId, input.target);
+  if (!target) {
+    return {
+      ok: false,
+      status: 404,
+      error: "That lesson or quiz isn't on this course.",
+    };
+  }
+  const sender = db
+    .select({ name: users.name })
+    .from(users)
+    .where(eq(users.id, input.senderId))
+    .get();
+  const note = input.note?.trim() || null;
+
+  const last = db
+    .select({
+      sentAt: announcements.sentAt,
+      reachedCount: announcements.reachedCount,
+    })
+    .from(announcements)
+    .where(
+      and(
+        eq(announcements.courseId, input.courseId),
+        eq(announcements.lessonId, input.target.lessonId),
+        eq(announcements.targetKind, input.target.kind)
+      )
+    )
+    .orderBy(desc(announcements.sentAt), desc(announcements.id))
+    .get();
+
+  return {
+    ok: true,
+    recipients: currentStudents(db, input.courseId, input.senderId),
+    lapsedCount: lapsedCount(db, input.courseId, input.senderId),
+    lastAnnounced: last ?? null,
+    bellRow: {
+      title: announcementBellTitle(
+        sender?.name ?? "",
+        input.target.kind,
+        target.subjectTitle
+      ),
+      snippet: note ?? target.courseTitle,
+    },
+    push: announcementPushText(target.subjectTitle, target.courseTitle),
+  };
+}
+
+export type SendAnnouncementInput = {
+  courseId: number;
+  senderId: number;
+  target: AnnouncementTarget;
+  note: string | null;
+};
+
+export type SendAnnouncementResult =
+  | {
+      ok: true;
+      announcementId: number;
+      reachedCount: number;
+      pushMessages: PushMessage[];
+    }
+  | Failure;
+
+// Stores the Announcement and records the event. Access (the course's own
+// Instructor, or a Platform Admin) is checked by the route.
+export function sendAnnouncement(
+  db: Db,
+  input: SendAnnouncementInput,
+  now: Date
+): SendAnnouncementResult {
+  const note = input.note?.trim() || null;
+  if (note !== null && note.length > ANNOUNCEMENT_NOTE_MAX) {
+    return {
+      ok: false,
+      status: 400,
+      error: `The note can be at most ${ANNOUNCEMENT_NOTE_MAX} characters.`,
+    };
+  }
+  if (!resolveTarget(db, input.courseId, input.target)) {
+    return {
+      ok: false,
+      status: 404,
+      error: "That lesson or quiz isn't on this course.",
+    };
+  }
+
+  const reachedCount = currentStudents(
+    db,
+    input.courseId,
+    input.senderId
+  ).length;
+  const announcementId = db
+    .insert(announcements)
+    .values({
+      courseId: input.courseId,
+      senderId: input.senderId,
+      targetKind: input.target.kind,
+      lessonId: input.target.lessonId,
+      note,
+      sentAt: now.toISOString(),
+      reachedCount,
+    })
+    .returning({ id: announcements.id })
+    .get().id;
+
+  const { pushMessages } = recordNotificationEvent(
+    db,
+    { type: "announcement_sent", announcementId },
+    now
+  );
+  return { ok: true, announcementId, reachedCount, pushMessages };
+}
+
+export type SentAnnouncement = {
+  id: number;
+  targetKind: AnnouncementTargetKind;
+  lessonId: number;
+  // The lesson's or quiz's current title.
+  subjectTitle: string;
+  note: string | null;
+  sentAt: string;
+  reachedCount: number;
+};
+
+// Every Announcement on the course, newest first.
+export function listAnnouncements(
+  db: Db,
+  courseId: number
+): SentAnnouncement[] {
+  return db
+    .select({
+      id: announcements.id,
+      targetKind: announcements.targetKind,
+      lessonId: announcements.lessonId,
+      lessonTitle: lessons.title,
+      quizTitle: quizzes.title,
+      note: announcements.note,
+      sentAt: announcements.sentAt,
+      reachedCount: announcements.reachedCount,
+    })
+    .from(announcements)
+    .innerJoin(lessons, eq(lessons.id, announcements.lessonId))
+    .leftJoin(quizzes, eq(quizzes.lessonId, announcements.lessonId))
+    .where(eq(announcements.courseId, courseId))
+    .orderBy(desc(announcements.sentAt), desc(announcements.id))
+    .all()
+    .map(({ lessonTitle, quizTitle, ...row }) => ({
+      ...row,
+      subjectTitle:
+        row.targetKind === AnnouncementTargetKind.Quiz
+          ? (quizTitle ?? `Quiz on ${lessonTitle}`)
+          : lessonTitle,
+    }));
+}
+
+function recordAnnouncement(
+  db: Db,
+  announcementId: number,
+  now: Date
+): RecordResult {
+  const row = db
+    .select({
+      courseId: announcements.courseId,
+      senderId: announcements.senderId,
+      targetKind: announcements.targetKind,
+      lessonId: announcements.lessonId,
+      note: announcements.note,
+      senderName: users.name,
+    })
+    .from(announcements)
+    .innerJoin(users, eq(users.id, announcements.senderId))
+    .where(eq(announcements.id, announcementId))
+    .get();
+  if (!row) return { pushMessages: [] };
+
+  const target = resolveTarget(db, row.courseId, {
+    kind: row.targetKind,
+    lessonId: row.lessonId,
+  });
+  if (!target) return { pushMessages: [] };
+
+  const recipients = currentStudents(db, row.courseId, row.senderId);
+
+  db.transaction((tx) => {
+    for (const recipient of recipients) {
+      notify(
+        tx,
+        {
+          recipientId: recipient.id,
+          type: NotificationType.Announcement,
+          bundleKey: null,
+          actorName: row.senderName,
+          courseTitle: target.courseTitle,
+          subjectTitle: target.subjectTitle,
+          detail: row.targetKind,
+          note: row.note,
+          destinationUrl: `/courses/${target.courseSlug}/lessons/${row.lessonId}`,
+        },
+        {
+          kind: NotificationSourceKind.Announcement,
+          id: announcementId,
+          lessonId: row.lessonId,
+        },
+        now
+      );
+    }
+  });
+
+  // Push for Announcements lands with #22, worded by announcementPushText.
+  return { pushMessages: [] };
 }
