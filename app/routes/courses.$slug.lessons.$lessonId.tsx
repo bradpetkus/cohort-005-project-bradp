@@ -945,6 +945,11 @@ export async function action({ params, request }: Route.ActionArgs) {
         throw data("Comment not found", { status: 404 });
       }
       deleteComment(parsed.data.commentId, currentUserId, access.isStaff);
+      recordNotificationEvent(
+        db,
+        { type: "comment_deleted", commentId: parsed.data.commentId },
+        new Date()
+      );
       return { ok: true };
     } catch (error) {
       // Service validation failures are user-correctable; anything thrown as a
