@@ -11,6 +11,7 @@ import type { Route } from "./+types/instructor.$courseId";
 import { getCurrentUserId } from "~/lib/session";
 import { CourseStatus, UserRole } from "~/db/schema";
 import { db } from "~/db";
+import { recordNotificationEvent } from "~/lib/notifications.server";
 import {
   courses,
   categories,
@@ -759,6 +760,12 @@ export async function action({ params, request }: Route.ActionArgs) {
         { status: 404 }
       );
     }
+    // Before the delete, while the module's lessons can still be found.
+    recordNotificationEvent(
+      db,
+      { type: "module_deleted", moduleId },
+      new Date()
+    );
     deleteModule(moduleId);
     return { success: true, field: "module" };
   }
@@ -850,6 +857,11 @@ export async function action({ params, request }: Route.ActionArgs) {
         { status: 404 }
       );
     }
+    recordNotificationEvent(
+      db,
+      { type: "lesson_deleted", lessonId },
+      new Date()
+    );
     deleteLesson(lessonId);
     return { success: true, field: "lesson" };
   }

@@ -17,6 +17,7 @@ import {
   quizAnswers,
 } from "~/db/schema";
 import { db } from "~/db";
+import { recordNotificationEvent } from "~/lib/notifications.server";
 import { eq, sql } from "drizzle-orm";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -425,6 +426,13 @@ export async function action({ params, request }: Route.ActionArgs) {
   if (intent === "delete-quiz") {
     const existingQuiz = getQuizByLessonId(lessonId);
     if (existingQuiz) {
+      // Only a real delete: save-quiz re-creates the quiz and must leave its
+      // Announcements alone.
+      recordNotificationEvent(
+        db,
+        { type: "quiz_deleted", lessonId },
+        new Date()
+      );
       deleteQuiz(existingQuiz.id);
     }
     return { success: true, deleted: true };
