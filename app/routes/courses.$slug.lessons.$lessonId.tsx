@@ -11,10 +11,7 @@ import {
 } from "~/components/comment-thread";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
 import { db } from "~/db";
-import {
-  deliverPushMessages,
-  recordNotificationEvent,
-} from "~/lib/notifications.server";
+import { notify } from "~/lib/notifications.server";
 import {
   categories,
   comments,
@@ -910,14 +907,13 @@ export async function action({ params, request }: Route.ActionArgs) {
           parsed.data.parentId ?? null,
           parsed.data.body
         );
-        const { pushMessages } = recordNotificationEvent(
+        await notify(
           db,
           created.parentId !== null
             ? { type: "comment_reply", commentId: created.id }
             : { type: "new_question", commentId: created.id },
           new Date()
         );
-        await deliverPushMessages(db, pushMessages);
         return { ok: true };
       }
 
@@ -945,7 +941,7 @@ export async function action({ params, request }: Route.ActionArgs) {
         throw data("Comment not found", { status: 404 });
       }
       deleteComment(parsed.data.commentId, currentUserId, access.isStaff);
-      recordNotificationEvent(
+      await notify(
         db,
         { type: "comment_deleted", commentId: parsed.data.commentId },
         new Date()

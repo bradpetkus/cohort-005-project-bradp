@@ -35,6 +35,8 @@ import {
   recordSourceDeleted,
   type SourceDeletedEvent,
 } from "./notifications/deletion.server";
+import { deliverPushMessages } from "./notifications/push.server";
+import type { PushTransport } from "~/lib/push.server";
 
 // ─── Domain events ───
 
@@ -72,6 +74,19 @@ export function recordNotificationEvent(
     case "module_deleted":
       return recordSourceDeleted(db, event);
   }
+}
+
+// What an action calls after its own write succeeds: record the event, then
+// deliver its push messages. Push failures are logged, never thrown. In-app
+// only events simply have nothing to deliver.
+export async function notify(
+  db: Db,
+  event: NotificationEvent,
+  now: Date,
+  transport?: PushTransport
+): Promise<void> {
+  const { pushMessages } = recordNotificationEvent(db, event, now);
+  await deliverPushMessages(db, pushMessages, transport);
 }
 
 export {

@@ -14,10 +14,7 @@ import { Textarea } from "~/components/ui/textarea";
 import { AlertTriangle, Receipt } from "lucide-react";
 import { data, isRouteErrorResponse, Link } from "react-router";
 import { formatPrice } from "~/lib/utils";
-import {
-  deliverPushMessages,
-  recordNotificationEvent,
-} from "~/lib/notifications.server";
+import { notify } from "~/lib/notifications.server";
 import {
   approveRefundRequest,
   declineRefundRequest,
@@ -131,7 +128,7 @@ export async function action({ request }: Route.ActionArgs) {
     return data({ error: result.error }, { status: result.status });
   }
 
-  const { pushMessages } = recordNotificationEvent(
+  await notify(
     db,
     {
       type: "refund_decided",
@@ -142,7 +139,6 @@ export async function action({ request }: Route.ActionArgs) {
     },
     new Date()
   );
-  await deliverPushMessages(db, pushMessages);
 
   await sendEmail(result.email);
 

@@ -10,6 +10,7 @@ import {
   deliverPushMessages,
   getPushPreferences,
   listPushDevices,
+  notify,
   pushEventTypesFor,
   recordNotificationEvent,
   removePushSubscription,
@@ -415,6 +416,35 @@ describe("delivering push messages", () => {
       tag: expect.stringMatching(/^thread:/),
       url: expect.stringContaining("#comment-"),
     });
+  });
+
+  it("records an event and delivers its push in one call", async () => {
+    const ana = addLearner("Ana");
+    const phone = addDevice(ana.id);
+    const question = postComment(ana.id);
+    const answer = db
+      .insert(schema.comments)
+      .values({
+        lessonId,
+        userId: addLearner("Sam").id,
+        parentId: question.id,
+        body: "Here is my answer.",
+      })
+      .returning()
+      .get();
+    const { transport, sent } = fakeTransport();
+
+    await notify(
+      db,
+      { type: "comment_reply", commentId: answer.id },
+      NOW,
+      transport
+    );
+
+    expect(listBell(db, ana.id)).toEqual([
+      expect.objectContaining({ pushed: true, unread: true }),
+    ]);
+    expect(sent.map((s) => s.endpoint)).toEqual([phone]);
   });
 
   it("removes devices the push service reports gone", async () => {

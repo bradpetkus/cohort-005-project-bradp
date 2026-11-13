@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { Route } from "./+types/courses.$slug.purchase";
 import { getCurrentUserId } from "~/lib/session";
 import { db } from "~/db";
-import { recordNotificationEvent } from "~/lib/notifications.server";
+import { notify } from "~/lib/notifications.server";
 import {
   courses,
   categories,
@@ -375,13 +375,10 @@ export async function action({ params, request }: Route.ActionArgs) {
       country
     );
     const enrollment = enrollUser(currentUserId, course.id, false, false);
+    // In-app only: nothing is pushed, but notify keeps the pattern the same.
     const now = new Date();
-    recordNotificationEvent(
-      db,
-      { type: "purchase_made", purchaseId: purchase.id },
-      now
-    );
-    recordNotificationEvent(
+    await notify(db, { type: "purchase_made", purchaseId: purchase.id }, now);
+    await notify(
       db,
       {
         type: "enrollment_gained",
@@ -403,7 +400,7 @@ export async function action({ params, request }: Route.ActionArgs) {
     country,
     quantity
   );
-  recordNotificationEvent(
+  await notify(
     db,
     { type: "purchase_made", purchaseId: purchase.id },
     new Date()

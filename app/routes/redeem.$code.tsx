@@ -12,7 +12,7 @@ import { Button } from "~/components/ui/button";
 import { Ticket, AlertCircle, CheckCircle2, Globe } from "lucide-react";
 import { data } from "react-router";
 import { db } from "~/db";
-import { recordNotificationEvent } from "~/lib/notifications.server";
+import { notify } from "~/lib/notifications.server";
 import { purchases, coupons, courses, enrollments } from "~/db/schema";
 import { eq, and } from "drizzle-orm";
 
@@ -205,13 +205,10 @@ export async function action({ params, request }: Route.ActionArgs) {
     return data({ error: result.error }, { status: 400 });
   }
 
+  // In-app only: nothing is pushed, but notify keeps the pattern the same.
   const now = new Date();
-  recordNotificationEvent(
-    db,
-    { type: "seat_claimed", seatId: result.seatId },
-    now
-  );
-  recordNotificationEvent(
+  await notify(db, { type: "seat_claimed", seatId: result.seatId }, now);
+  await notify(
     db,
     {
       type: "enrollment_gained",

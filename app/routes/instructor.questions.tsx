@@ -15,10 +15,7 @@ import { cn, daysSince, formatRelativeTime } from "~/lib/utils";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
 import { parseFormData } from "~/lib/validation";
 import { db } from "~/db";
-import {
-  deliverPushMessages,
-  recordNotificationEvent,
-} from "~/lib/notifications.server";
+import { notify } from "~/lib/notifications.server";
 import {
   comments,
   courses,
@@ -218,12 +215,11 @@ export async function action({ request }: Route.ActionArgs) {
       question.id,
       parsed.data.body
     );
-    const { pushMessages } = recordNotificationEvent(
+    await notify(
       db,
       { type: "comment_reply", commentId: created.id },
       new Date()
     );
-    await deliverPushMessages(db, pushMessages);
   } catch (error) {
     if (error instanceof Error) {
       return { ok: false, error: error.message };
