@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, isNull, lt, ne, sql } from "drizzle-orm";
+import { lte, type SQL } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import * as schema from "~/db/schema";
 import {
@@ -45,7 +46,8 @@ export type NotificationEvent =
   | { type: "new_question"; commentId: number }
   | { type: "announcement_sent"; announcementId: number }
   | BusinessEvent
-  | RefundNotificationEvent;
+  | RefundNotificationEvent
+  | SourceDeletedEvent;
 
 export type PushMessage = {
   userId: number;
@@ -65,6 +67,7 @@ export function recordNotificationEvent(
   event: NotificationEvent,
   now: Date
 ): RecordResult {
+  deleteExpiredNotifications(db, now);
   switch (event.type) {
     case "comment_reply":
       return recordReply(db, event.commentId, now);
@@ -80,6 +83,11 @@ export function recordNotificationEvent(
       return recordRefundRequested(db, event.refundRequestId, now);
     case "refund_decided":
       return recordRefundDecided(db, event, now);
+    case "comment_deleted":
+    case "lesson_deleted":
+    case "quiz_deleted":
+    case "module_deleted":
+      return recordSourceDeleted(db, event);
   }
 }
 
@@ -1221,7 +1229,10 @@ export function announcementPushText(
   subjectTitle: string,
   courseTitle: string
 ): { title: string; body: string } {
-  return { title: `New Announcement: ${subjectTitle} · ${courseTitle}`, body: "" };
+  return {
+    title: `New Announcement: ${subjectTitle} · ${courseTitle}`,
+    body: "",
+  };
 }
 
 export type AnnouncementPreview = {
@@ -1450,4 +1461,153 @@ function recordAnnouncement(
 
   // Push for Announcements lands with #22, worded by announcementPushText.
   return { pushMessages: [] };
+}
+
+// ─── Deleted sources (#19) ───
+// The bell never points at something that's gone. Each row loses one event
+// per deleted source, and disappears at zero. Edits are never events.
+//
+// Lessons, quizzes and modules are hard-deleted: record those *before* the
+// delete, so a module's lessons can still be found. Comments are
+// soft-deleted: record after.
+
+export type SourceDeletedEvent =
+  | { type: "comment_deleted"; commentId: number }
+  | { type: "lesson_deleted"; lessonId: number }
+  | { type: "quiz_deleted"; lessonId: number }
+  | { type: "module_deleted"; moduleId: number };
+
+function recordSourceDeleted(db: Db, event: SourceDeletedEvent): RecordResult {
+  db.transaction((tx) => {
+    switch (event.type) {
+      case "comment_deleted":
+        removeSources(
+          tx,
+          and(
+            eq(notificationSources.sourceKind, NotificationSourceKind.Comment),
+            eq(notificationSources.sourceId, event.commentId)
+          )
+        );
+        break;
+      case "lesson_deleted":
+        removeLessons(tx, [event.lessonId]);
+        break;
+      case "module_deleted":
+        removeLessons(
+          tx,
+          tx
+            .select({ id: lessons.id })
+            .from(lessons)
+            .where(eq(lessons.moduleId, event.moduleId))
+            .all()
+            .map((l) => l.id)
+        );
+        break;
+      case "quiz_deleted":
+        removeAnnouncements(
+          tx,
+          and(
+            eq(announcements.lessonId, event.lessonId),
+            eq(announcements.targetKind, AnnouncementTargetKind.Quiz)
+          )
+        );
+        break;
+    }
+  });
+  return { pushMessages: [] };
+}
+
+// Everything under the lessons: comment rows and Announcements (lesson and
+// quiz) with their rows. Sources carry their lessonId, so this works even
+// after the comments are gone.
+function removeLessons(tx: Tx, lessonIds: number[]) {
+  if (lessonIds.length === 0) return;
+  removeSources(tx, inArray(notificationSources.lessonId, lessonIds));
+  removeAnnouncements(tx, inArray(announcements.lessonId, lessonIds));
+}
+
+function removeAnnouncements(tx: Tx, where: SQL | undefined) {
+  const ids = tx
+    .delete(announcements)
+    .where(where)
+    .returning({ id: announcements.id })
+    .all()
+    .map((a) => a.id);
+  if (ids.length === 0) return;
+  removeSources(
+    tx,
+    and(
+      eq(notificationSources.sourceKind, NotificationSourceKind.Announcement),
+      inArray(notificationSources.sourceId, ids)
+    )
+  );
+}
+
+// ─── Retention (#19) ───
+// Rows older than 90 days go, read or unread. Runs on every recorded event
+// instead of on a schedule; createdAt is indexed, so it's cheap. Sources go
+// with their row (ON DELETE CASCADE).
+
+export const RETENTION_DAYS = 90;
+
+function deleteExpiredNotifications(db: Db, now: Date) {
+  const cutoff = new Date(now.getTime() - RETENTION_DAYS * 24 * 60 * 60_000);
+  db.delete(notifications)
+    .where(lt(notifications.createdAt, cutoff.toISOString()))
+    .run();
+}
+
+// Drops the matching sources, lowers each affected row's count by the number
+// it lost, and deletes rows left at zero.
+function removeSources(tx: Tx, where: SQL | undefined) {
+  const removed = tx
+    .delete(notificationSources)
+    .where(where)
+    .returning({ notificationId: notificationSources.notificationId })
+    .all();
+
+  const lost = new Map<number, number>();
+  for (const { notificationId } of removed) {
+    lost.set(notificationId, (lost.get(notificationId) ?? 0) + 1);
+  }
+  for (const [notificationId, count] of lost) {
+    tx.update(notifications)
+      .set({ eventCount: sql`${notifications.eventCount} - ${count}` })
+      .where(eq(notifications.id, notificationId))
+      .run();
+  }
+  if (lost.size === 0) return;
+
+  tx.delete(notifications)
+    .where(
+      and(
+        inArray(notifications.id, [...lost.keys()]),
+        lte(notifications.eventCount, 0)
+      )
+    )
+    .run();
+
+  // A surviving comment bundle names the author of its latest remaining
+  // comment, as it would have had the deleted one never been posted.
+  for (const notificationId of lost.keys()) {
+    const latest = tx
+      .select({ actorName: users.name })
+      .from(notificationSources)
+      .innerJoin(comments, eq(comments.id, notificationSources.sourceId))
+      .innerJoin(users, eq(users.id, comments.userId))
+      .where(
+        and(
+          eq(notificationSources.notificationId, notificationId),
+          eq(notificationSources.sourceKind, NotificationSourceKind.Comment)
+        )
+      )
+      .orderBy(desc(notificationSources.sourceId))
+      .get();
+    if (latest) {
+      tx.update(notifications)
+        .set({ actorName: latest.actorName })
+        .where(eq(notifications.id, notificationId))
+        .run();
+    }
+  }
 }
