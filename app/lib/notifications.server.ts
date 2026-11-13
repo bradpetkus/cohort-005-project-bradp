@@ -106,8 +106,9 @@ function recordQuestion(db: Db, commentId: number, now: Date): RecordResult {
   if (!question || question.parentId !== null) return { pushMessages: [] };
   if (question.instructorId === question.actorId) return { pushMessages: [] };
 
+  const pushMessages: PushMessage[] = [];
   db.transaction((tx) => {
-    notify(
+    const push = notify(
       tx,
       {
         recipientId: question.instructorId,
@@ -127,9 +128,10 @@ function recordQuestion(db: Db, commentId: number, now: Date): RecordResult {
       },
       now
     );
+    if (push) pushMessages.push(push);
   });
 
-  return { pushMessages: [] };
+  return { pushMessages };
 }
 
 function recordReply(db: Db, commentId: number, now: Date): RecordResult {
@@ -259,9 +261,10 @@ function recordRefundRequested(
     .map((u) => u.id)
     .filter((id) => id !== request.buyerId);
 
+  const pushMessages: PushMessage[] = [];
   db.transaction((tx) => {
     for (const recipientId of admins) {
-      notify(
+      const push = notify(
         tx,
         {
           recipientId,
@@ -281,10 +284,11 @@ function recordRefundRequested(
         },
         now
       );
+      if (push) pushMessages.push(push);
     }
   });
 
-  return { pushMessages: [] };
+  return { pushMessages };
 }
 
 // The buyer (Student or Team Admin) hears the outcome, with the note.
@@ -310,6 +314,7 @@ function recordRefundDecided(
     lessonId: null,
   };
 
+  const pushMessages: PushMessage[] = [];
   db.transaction((tx) => {
     // The request is done, so no Platform Admin needs to open it any more.
     // The decider's own row goes too: they've just handled it.
@@ -339,7 +344,7 @@ function recordRefundDecided(
       .run();
 
     if (request.buyerId !== request.deciderId) {
-      notify(
+      const push = notify(
         tx,
         {
           recipientId: request.buyerId,
@@ -355,6 +360,7 @@ function recordRefundDecided(
         source,
         now
       );
+      if (push) pushMessages.push(push);
     }
 
     // In-app only, never bundled.
@@ -382,7 +388,7 @@ function recordRefundDecided(
     }
   });
 
-  return { pushMessages: [] };
+  return { pushMessages };
 }
 
 // ─── Creating and merging bell rows ───
@@ -474,14 +480,13 @@ function notify(
 
 // ─── Channel decision ───
 // Which push event type each Notification type belongs to. Null means the
-// type is in-app only. Types not switched to push yet are null too, so
-// switching one on is a one-line change here.
+// type is in-app only (Purchases, Enrollments and Seats).
 const PUSH_EVENT_FOR: Record<NotificationType, PushEventType | null> = {
   [NotificationType.Reply]: PushEventType.Reply,
-  [NotificationType.Question]: null,
-  [NotificationType.Announcement]: null,
-  [NotificationType.RefundDecision]: null,
-  [NotificationType.RefundRequest]: null,
+  [NotificationType.Question]: PushEventType.Question,
+  [NotificationType.Announcement]: PushEventType.Announcement,
+  [NotificationType.RefundDecision]: PushEventType.RefundDecision,
+  [NotificationType.RefundRequest]: PushEventType.RefundRequest,
   [NotificationType.Purchase]: null,
   [NotificationType.EnrollmentGained]: null,
   [NotificationType.EnrollmentEnded]: null,
@@ -526,17 +531,35 @@ function hasDevice(tx: Queryable, userId: number) {
   );
 }
 
-// Lock-screen text says only what happened and where: the bell title and the
-// course. It never includes comment text or notes. The tag is the bundle key,
-// so a bundle replaces its earlier push, or else a key unique to the row.
+// Lock-screen text says only what happened and where. It never includes
+// comment text, an Announcement note or a decision note. The tag is the
+// bundle key, so a bundle replaces its earlier push, or else a key unique to
+// the row.
 function pushMessageFor(row: NotificationRow): PushMessage {
   return {
     userId: row.recipientId,
-    title: titleFor(row),
-    body: row.courseTitle ?? "",
+    ...pushTextFor(row),
     tag: row.bundleKey ?? `notification:${row.id}`,
     url: row.destinationUrl,
   };
+}
+
+function pushTextFor(row: NotificationRow): { title: string; body: string } {
+  switch (row.type) {
+    case NotificationType.Announcement:
+      // The same text the review step previews.
+      return announcementPushText(
+        row.subjectTitle ?? "",
+        row.courseTitle ?? ""
+      );
+    case NotificationType.RefundDecision:
+      return {
+        title: `Your Refund Request was ${row.detail}`,
+        body: row.courseTitle ?? "",
+      };
+    default:
+      return { title: titleFor(row), body: row.courseTitle ?? "" };
+  }
 }
 
 // ─── Reading the bell ───
@@ -819,7 +842,11 @@ export function testPushMessage(userId: number, endpoint: string): PushMessage {
 
 // ─── Delivering push ───
 
-export type DeliveryReport = { delivered: number; gone: number; failed: number };
+export type DeliveryReport = {
+  delivered: number;
+  gone: number;
+  failed: number;
+};
 
 // Sends each message to every device of its recipient (or only the one it
 // names) and deletes devices the push service reports gone (404/410).
@@ -1192,7 +1219,10 @@ export function announcementPushText(
   subjectTitle: string,
   courseTitle: string
 ): { title: string; body: string } {
-  return { title: `New Announcement: ${subjectTitle} · ${courseTitle}`, body: "" };
+  return {
+    title: `New Announcement: ${subjectTitle} · ${courseTitle}`,
+    body: "",
+  };
 }
 
 export type AnnouncementPreview = {
@@ -1394,9 +1424,10 @@ function recordAnnouncement(
 
   const recipients = currentStudents(db, row.courseId, row.senderId);
 
+  const pushMessages: PushMessage[] = [];
   db.transaction((tx) => {
     for (const recipient of recipients) {
-      notify(
+      const push = notify(
         tx,
         {
           recipientId: recipient.id,
@@ -1416,9 +1447,9 @@ function recordAnnouncement(
         },
         now
       );
+      if (push) pushMessages.push(push);
     }
   });
 
-  // Push for Announcements lands with #22, worded by announcementPushText.
-  return { pushMessages: [] };
+  return { pushMessages };
 }

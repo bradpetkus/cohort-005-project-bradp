@@ -95,7 +95,6 @@ export async function action({ params, request }: Route.ActionArgs) {
       { status: result.status }
     );
   }
-  // Empty until #22 switches Announcements to push.
   await deliverPushMessages(db, result.pushMessages);
   return { ok: true as const, reachedCount: result.reachedCount };
 }
