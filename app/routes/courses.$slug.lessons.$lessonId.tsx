@@ -913,6 +913,12 @@ export async function action({ params, request }: Route.ActionArgs) {
             { type: "comment_reply", commentId: created.id },
             new Date()
           );
+        } else {
+          recordNotificationEvent(
+            db,
+            { type: "new_question", commentId: created.id },
+            new Date()
+          );
         }
         return { ok: true };
       }
