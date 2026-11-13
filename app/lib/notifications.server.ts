@@ -31,10 +31,8 @@ type Queryable = Db | Tx;
 // ─── Domain events ───
 
 export type NotificationEvent =
-  | {
-      type: "comment_reply";
-      commentId: number;
-    }
+  | { type: "comment_reply"; commentId: number }
+  | { type: "new_question"; commentId: number }
   | BusinessEvent;
 
 export type PushMessage = {
@@ -55,11 +53,63 @@ export function recordNotificationEvent(
   switch (event.type) {
     case "comment_reply":
       return recordReply(db, event.commentId, now);
+    case "new_question":
+      return recordQuestion(db, event.commentId, now);
     case "purchase_made":
     case "enrollment_gained":
     case "seat_claimed":
       return recordBusinessEvent(db, event, now);
   }
+}
+
+// A new top-level comment notifies the course's Instructor, never the asker.
+// Questions bundle by lesson and all lead to the Questions queue.
+function recordQuestion(db: Db, commentId: number, now: Date): RecordResult {
+  const question = db
+    .select({
+      id: comments.id,
+      parentId: comments.parentId,
+      lessonId: comments.lessonId,
+      actorId: comments.userId,
+      actorName: users.name,
+      lessonTitle: lessons.title,
+      courseTitle: courses.title,
+      instructorId: courses.instructorId,
+    })
+    .from(comments)
+    .innerJoin(users, eq(users.id, comments.userId))
+    .innerJoin(lessons, eq(lessons.id, comments.lessonId))
+    .innerJoin(modules, eq(modules.id, lessons.moduleId))
+    .innerJoin(courses, eq(courses.id, modules.courseId))
+    .where(eq(comments.id, commentId))
+    .get();
+  if (!question || question.parentId !== null) return { pushMessages: [] };
+  if (question.instructorId === question.actorId) return { pushMessages: [] };
+
+  db.transaction((tx) => {
+    notify(
+      tx,
+      {
+        recipientId: question.instructorId,
+        type: NotificationType.Question,
+        bundleKey: `lesson:${question.lessonId}`,
+        actorName: question.actorName,
+        courseTitle: question.courseTitle,
+        subjectTitle: question.lessonTitle,
+        detail: null,
+        note: null,
+        destinationUrl: "/instructor/questions",
+      },
+      {
+        kind: NotificationSourceKind.Comment,
+        id: question.id,
+        lessonId: question.lessonId,
+      },
+      now
+    );
+  });
+
+  return { pushMessages: [] };
 }
 
 function recordReply(db: Db, commentId: number, now: Date): RecordResult {
@@ -237,6 +287,11 @@ function titleFor(row: NotificationRow): string {
       }
       return `${row.actorName} replied ${row.detail === REPLY_ON_OWN ? "to" : "in"} ${where}`;
     }
+    case NotificationType.Question:
+      if (row.eventCount > 1) {
+        return `${row.eventCount} new questions on ${row.subjectTitle}`;
+      }
+      return `${row.actorName} asked a question on ${row.subjectTitle}`;
     case NotificationType.Purchase:
     case NotificationType.EnrollmentGained:
     case NotificationType.SeatClaimed:
