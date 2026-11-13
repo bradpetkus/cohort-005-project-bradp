@@ -175,7 +175,7 @@ describe("deleting a comment", () => {
     ]);
   });
 
-  it("names the remaining replier when a bundle drops to one", () => {
+  it("keeps the row's original wording when a bundle drops to one", () => {
     const ana = addLearner("Ana");
     const bo = addLearner("Bo");
     const sam = addLearner("Sam");
@@ -187,7 +187,7 @@ describe("deleting a comment", () => {
 
     expect(listBell(db, ana.id)).toEqual([
       expect.objectContaining({
-        title: "Bo replied to your comment on Lesson 3",
+        title: "Sam replied to your comment on Lesson 3",
       }),
     ]);
   });

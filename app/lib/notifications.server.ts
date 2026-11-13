@@ -1624,28 +1624,5 @@ function removeSources(tx: Tx, where: SQL | undefined) {
       )
     )
     .run();
-
-  // A surviving comment bundle names the author of its latest remaining
-  // comment, as it would have had the deleted one never been posted.
-  for (const notificationId of lost.keys()) {
-    const latest = tx
-      .select({ actorName: users.name })
-      .from(notificationSources)
-      .innerJoin(comments, eq(comments.id, notificationSources.sourceId))
-      .innerJoin(users, eq(users.id, comments.userId))
-      .where(
-        and(
-          eq(notificationSources.notificationId, notificationId),
-          eq(notificationSources.sourceKind, NotificationSourceKind.Comment)
-        )
-      )
-      .orderBy(desc(notificationSources.sourceId))
-      .get();
-    if (latest) {
-      tx.update(notifications)
-        .set({ actorName: latest.actorName })
-        .where(eq(notifications.id, notificationId))
-        .run();
-    }
-  }
+  // A surviving row keeps its original wording: only its count changes.
 }
