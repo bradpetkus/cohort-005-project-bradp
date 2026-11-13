@@ -325,14 +325,17 @@ function recordRefundDecided(
 
   const pushMessages: PushMessage[] = [];
   db.transaction((tx) => {
-    // The request is done, so no Platform Admin needs to open it any more.
-    // The decider's own row goes too: they've just handled it.
+    // The request is done, so no other Platform Admin needs to open it any
+    // more. The decider's own row is left as it was.
     tx.update(notifications)
       .set({ readAt: now.toISOString() })
       .where(
         and(
           eq(notifications.type, NotificationType.RefundRequest),
           isNull(notifications.readAt),
+          request.deciderId === null
+            ? undefined
+            : ne(notifications.recipientId, request.deciderId),
           inArray(
             notifications.id,
             tx

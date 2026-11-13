@@ -255,6 +255,19 @@ describe("a decided Refund Request", () => {
       expect(getUnreadCount(db, admin.id)).toBe(1);
     }
   });
+
+  it("leaves the deciding Platform Admin's own row as it was", () => {
+    const decided = requestRefund(buyForSelf(base.user.id).id, base.user.id);
+
+    approve(decided, pat.id, null, minutesAfter(5));
+
+    expect(listBell(db, pat.id)).toEqual([
+      expect.objectContaining({
+        title: "Test User requested a refund for Test Course",
+        unread: true,
+      }),
+    ]);
+  });
 });
 
 describe("an Enrollment ended by an approved Refund Request", () => {
