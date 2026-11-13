@@ -37,7 +37,7 @@ function useOpen(n: ProtoNotification, after?: () => void) {
 
 /* ───────────────────────── Variant A ───────────────────────── */
 
-function RowA({ n, onDone }: { n: ProtoNotification; onDone: () => void }) {
+export function RowA({ n, onDone }: { n: ProtoNotification; onDone: () => void }) {
   const open = useOpen(n, onDone);
   return (
     <button

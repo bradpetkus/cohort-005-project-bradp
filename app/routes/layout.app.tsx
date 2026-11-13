@@ -5,8 +5,9 @@ import { DevUI } from "~/components/dev-ui";
 import { Toaster } from "sonner";
 // PROTOTYPE: notification bell
 import { NotificationsPrototypeProvider } from "~/components/notifications-prototype/store";
-import { PrototypeSwitcher } from "~/components/notifications-prototype/shared";
-import { SidebarHeaderSlot, SidebarNavSlot } from "~/components/notifications-prototype/variants";
+// PROTOTYPE: turning on phone notifications (replaces the bell prototype's switcher)
+import { PushPrototypeProvider } from "~/components/push-prototype/store";
+import { JustInTimeAskC, PushBell, PushOverlays, PushPrototypeSwitcher } from "~/components/push-prototype/ui";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
 import { eq, and, or, sql, desc } from "drizzle-orm";
@@ -257,13 +258,13 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
       isTeamAdmin={userIsTeamAdmin}
       links={sampleLinks}
     >
+    <PushPrototypeProvider>
     <div className="flex h-screen overflow-hidden">
       <Sidebar
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
-        headerSlot={currentUser ? <SidebarHeaderSlot /> : null}
-        navSlot={currentUser ? <SidebarNavSlot /> : null}
+        headerSlot={currentUser ? <PushBell /> : null}
       />
       <main className="flex-1 overflow-y-auto">
         <Outlet />
@@ -276,8 +277,11 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         countries={countries}
       />
       <Toaster position="bottom-right" richColors closeButton />
-      {currentUser && <PrototypeSwitcher />}
+      {currentUser && <PushPrototypeSwitcher />}
+      {currentUser && <JustInTimeAskC />}
+      <PushOverlays />
     </div>
+    </PushPrototypeProvider>
     </NotificationsPrototypeProvider>
   );
 }

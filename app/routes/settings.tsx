@@ -6,6 +6,8 @@ import type { Route } from "./+types/settings";
 import { getCurrentUserId } from "~/lib/session";
 import { parseFormData } from "~/lib/validation";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
+// PROTOTYPE: turning on phone notifications
+import { PushSettingsCard } from "~/components/push-prototype/ui";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
@@ -187,6 +189,9 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
           </fetcher.Form>
         </CardContent>
       </Card>
+
+      {/* PROTOTYPE: Notifications card (push devices + per-event push) */}
+      <PushSettingsCard role={user.role} />
 
       {refundRequests.length > 0 && (
         <Card className="mt-8 max-w-md">
