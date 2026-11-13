@@ -570,6 +570,12 @@ export function listTeamLicences(db: Queryable, buyerId: number, now: Date) {
 
 export type DecisionResult = { ok: true; email: Email } | Failure;
 
+// `enrollmentEnded` is true only when the approval actually removed the
+// buyer's Enrollment (not for a Team Licence, nor under docs/adr/0004).
+export type ApprovalResult =
+  | { ok: true; email: Email; enrollmentEnded: boolean }
+  | Failure;
+
 function findOpenRefundRequest(
   tx: Queryable,
   refundRequestId: number
@@ -617,12 +623,13 @@ export function approveRefundRequest(
   platformAdminId: number,
   note: string | null,
   now: Date
-): DecisionResult {
-  return db.transaction((tx): DecisionResult => {
+): ApprovalResult {
+  return db.transaction((tx): ApprovalResult => {
     const found = findOpenRefundRequest(tx, refundRequestId);
     if (!found.ok) return found;
 
     const { purchase } = found;
+    let enrollmentEnded = false;
     const seats = getSeats(tx, purchase.id);
 
     if (kindOf(seats) === "team_licence") {
@@ -655,7 +662,8 @@ export function approveRefundRequest(
         .get();
 
       if (!claimedSeat) {
-        tx.delete(enrollments)
+        const removed = tx
+          .delete(enrollments)
           .where(
             and(
               eq(enrollments.userId, purchase.userId),
@@ -663,6 +671,7 @@ export function approveRefundRequest(
             )
           )
           .run();
+        enrollmentEnded = removed.changes > 0;
       }
     }
 
@@ -680,6 +689,7 @@ export function approveRefundRequest(
     return {
       ok: true,
       email: buildDecisionEmail(tx, purchase, RefundStatus.Approved, note),
+      enrollmentEnded,
     };
   });
 }

@@ -2018,6 +2018,21 @@ This course is still in draft while the cluster examples are rewritten against t
     );
   }
 
+  // New questions: every seeded top-level comment, oldest first.
+  const seededQuestions = db
+    .select({ id: schema.comments.id, createdAt: schema.comments.createdAt })
+    .from(schema.comments)
+    .where(isNull(schema.comments.parentId))
+    .orderBy(schema.comments.createdAt, schema.comments.id)
+    .all();
+  for (const q of seededQuestions) {
+    recordNotificationEvent(
+      db,
+      { type: "new_question", commentId: q.id },
+      new Date(q.createdAt)
+    );
+  }
+
   console.log(`Created ${countRows(schema.notifications)} notifications.`);
 
   // ─── Lesson Progress ───

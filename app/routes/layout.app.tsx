@@ -2,7 +2,7 @@ import { Outlet } from "react-router";
 import type { Route } from "./+types/layout.app";
 import { Sidebar } from "~/components/sidebar";
 import { DevUI } from "~/components/dev-ui";
-import { NotificationBell } from "~/components/notification-bell";
+import { LiveBell } from "~/components/live-bell";
 import { getUnreadCount, listBell } from "~/lib/notifications.server";
 import { Toaster } from "sonner";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
@@ -246,7 +246,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         isTeamAdmin={userIsTeamAdmin}
         headerSlot={
           bell ? (
-            <NotificationBell unreadCount={bell.unreadCount} rows={bell.rows} />
+            <LiveBell unreadCount={bell.unreadCount} rows={bell.rows} />
           ) : null
         }
       />
