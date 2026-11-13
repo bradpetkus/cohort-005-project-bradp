@@ -73,19 +73,16 @@ export function AnnouncementsTab({ courseId, targets }: Props) {
     // Reload only when the inputs change, not on every fetcher update.
   }, [step, selected?.kind, selected?.lessonId, note, resource]);
 
+  // A failed send throws, so the course page's error boundary shows why.
   useEffect(() => {
     if (sendFetcher.state !== "idle" || !sendFetcher.data) return;
-    if (sendFetcher.data.ok) {
-      toast.success(
-        `Announcement sent to ${students(sendFetcher.data.reachedCount)}.`
-      );
-      setStep(1);
-      setSelectedKey(null);
-      setNote("");
-      setShowWho(false);
-    } else {
-      toast.error(sendFetcher.data.error);
-    }
+    toast.success(
+      `Announcement sent to ${students(sendFetcher.data.reachedCount)}.`
+    );
+    setStep(1);
+    setSelectedKey(null);
+    setNote("");
+    setShowWho(false);
   }, [sendFetcher.state, sendFetcher.data]);
 
   const preview = step === 3 ? previewFetcher.data?.preview : null;

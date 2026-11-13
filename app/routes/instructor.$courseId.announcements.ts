@@ -35,11 +35,7 @@ const targetSchema = z.object({
 // The sent history, plus the review-step preview when a target is given.
 export async function loader({ params, request }: Route.LoaderArgs) {
   const { courseId } = parseParams(params, paramsSchema);
-  const access = await requireStaff(request, courseId);
-  const senderId = access.userId;
-  if (senderId === null) {
-    throw data("Select a user from the DevUI panel.", { status: 401 });
-  }
+  const { userId: senderId } = await requireStaff(request, courseId);
 
   const history = listAnnouncements(db, courseId);
 
@@ -62,21 +58,13 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
 export async function action({ params, request }: Route.ActionArgs) {
   const { courseId } = parseParams(params, paramsSchema);
-  const access = await requireStaff(request, courseId);
-  const senderId = access.userId;
-  if (senderId === null) {
-    throw data("Select a user from the DevUI panel.", { status: 401 });
-  }
+  const { userId: senderId } = await requireStaff(request, courseId);
 
   const parsed = parseFormData(await request.formData(), targetSchema);
   if (!parsed.success) {
-    return data(
-      {
-        ok: false as const,
-        error: Object.values(parsed.errors)[0] ?? "Invalid input.",
-      },
-      { status: 400 }
-    );
+    throw data(Object.values(parsed.errors)[0] ?? "Invalid input.", {
+      status: 400,
+    });
   }
 
   const result = sendAnnouncement(
@@ -89,12 +77,7 @@ export async function action({ params, request }: Route.ActionArgs) {
     },
     new Date()
   );
-  if (!result.ok) {
-    return data(
-      { ok: false as const, error: result.error },
-      { status: result.status }
-    );
-  }
+  if (!result.ok) throw data(result.error, { status: result.status });
   await deliverPushMessages(db, result.pushMessages);
-  return { ok: true as const, reachedCount: result.reachedCount };
+  return { reachedCount: result.reachedCount };
 }

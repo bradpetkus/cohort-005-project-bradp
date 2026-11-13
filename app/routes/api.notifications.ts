@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Route } from "./+types/api.notifications";
 import { db } from "~/db";
 import { getCurrentUserId } from "~/lib/session";
+import { requireUserId } from "~/lib/access.server";
 import { parseFormData } from "~/lib/validation";
 import {
   getUnreadCount,
@@ -35,10 +36,7 @@ const notificationActionSchema = z.discriminatedUnion("intent", [
 ]);
 
 export async function action({ request }: Route.ActionArgs) {
-  const userId = await getCurrentUserId(request);
-  if (!userId) {
-    throw data("Select a user from the DevUI panel.", { status: 401 });
-  }
+  const userId = await requireUserId(request);
 
   const parsed = parseFormData(await request.formData(), notificationActionSchema);
   if (!parsed.success) {

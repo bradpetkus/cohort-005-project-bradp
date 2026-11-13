@@ -2285,9 +2285,12 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
 
   if (isRouteErrorResponse(error)) {
     if (error.status === 404) {
-      title = "Course not found";
+      // Also shows the Announcements tab's thrown 404s, so keep the reason.
+      title = "Not found";
       message =
-        "The course you're looking for doesn't exist or may have been removed.";
+        typeof error.data === "string"
+          ? error.data
+          : "The course you're looking for doesn't exist or may have been removed.";
     } else if (error.status === 401) {
       title = "Sign in required";
       message =

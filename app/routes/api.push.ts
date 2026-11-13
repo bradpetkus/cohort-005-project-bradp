@@ -2,7 +2,7 @@ import { data } from "react-router";
 import { z } from "zod";
 import type { Route } from "./+types/api.push";
 import { db } from "~/db";
-import { getCurrentUserId } from "~/lib/session";
+import { requireUserId } from "~/lib/access.server";
 import { parseFormData } from "~/lib/validation";
 import {
   deliverPushMessages,
@@ -46,10 +46,7 @@ const pushActionSchema = z.discriminatedUnion("intent", [
 ]);
 
 export async function action({ request }: Route.ActionArgs) {
-  const userId = await getCurrentUserId(request);
-  if (!userId) {
-    throw data("Select a user from the DevUI panel.", { status: 401 });
-  }
+  const userId = await requireUserId(request);
 
   const parsed = parseFormData(await request.formData(), pushActionSchema);
   if (!parsed.success) {
