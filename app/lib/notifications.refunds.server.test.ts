@@ -174,7 +174,7 @@ function approve(
       type: "refund_decided",
       refundRequestId,
       decision: "approved",
-      enrollmentEnded: result.enrollmentEnded,
+      endedEnrollmentUserIds: result.endedEnrollmentUserIds,
     },
     when
   );
@@ -194,7 +194,7 @@ function decline(
       type: "refund_decided",
       refundRequestId,
       decision: "declined",
-      enrollmentEnded: false,
+      endedEnrollmentUserIds: [],
     },
     when
   );
@@ -305,6 +305,34 @@ describe("an Enrollment ended by an approved Refund Request", () => {
     approve(id, pat.id, null, minutesAfter(5));
 
     expect(listBell(db, base.instructor.id)).toEqual([]);
+  });
+
+  it("gives the Instructor one row for each Enrollment the approval ended", () => {
+    const priya = addUser("Priya");
+    const ana = addUser("Ana");
+    const bo = addUser("Bo");
+    const { purchase } = buySeats(priya.id, 2);
+    const id = requestRefund(purchase.id, priya.id);
+    const result = approveRefundRequest(db, id, pat.id, null, minutesAfter(5));
+    if (!result.ok) throw new Error(result.error);
+
+    recordNotificationEvent(
+      db,
+      {
+        type: "refund_decided",
+        refundRequestId: id,
+        decision: "approved",
+        endedEnrollmentUserIds: [ana.id, bo.id],
+      },
+      minutesAfter(5)
+    );
+
+    expect(
+      listBell(db, base.instructor.id).map((row) => row.title)
+    ).toEqual([
+      "Bo left Test Course after a refund",
+      "Ana left Test Course after a refund",
+    ]);
   });
 
   it("tells no one when the Refund Request is declined", () => {

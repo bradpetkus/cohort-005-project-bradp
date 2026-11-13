@@ -136,9 +136,9 @@ export async function action({ request }: Route.ActionArgs) {
     {
       type: "refund_decided",
       refundRequestId,
-      decision: intent === "approve" ? "approved" : "declined",
-      enrollmentEnded:
-        "enrollmentEnded" in result && result.enrollmentEnded === true,
+      decision: result.decision,
+      endedEnrollmentUserIds:
+        result.decision === "approved" ? result.endedEnrollmentUserIds : [],
     },
     new Date()
   );

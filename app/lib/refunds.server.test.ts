@@ -271,7 +271,11 @@ describe("approving a Refund Request", () => {
 
     const result = approveRefundRequest(db, id, platformAdmin.id, null, NOW);
 
-    expect(result).toMatchObject({ ok: true, enrollmentEnded: true });
+    expect(result).toMatchObject({
+      ok: true,
+      decision: "approved",
+      endedEnrollmentUserIds: [base.user.id],
+    });
     expect(isEnrolled(base.user.id)).toBe(false);
     expect(
       db
@@ -312,7 +316,11 @@ describe("approving a Refund Request", () => {
 
     const result = approveRefundRequest(db, id, platformAdmin.id, null, NOW);
 
-    expect(result).toMatchObject({ ok: true, enrollmentEnded: false });
+    expect(result).toMatchObject({
+      ok: true,
+      decision: "approved",
+      endedEnrollmentUserIds: [],
+    });
     expect(isEnrolled(base.user.id)).toBe(true);
   });
 
@@ -323,7 +331,11 @@ describe("approving a Refund Request", () => {
 
     const result = approveRefundRequest(db, id, platformAdmin.id, null, NOW);
 
-    expect(result).toMatchObject({ ok: true, enrollmentEnded: false });
+    expect(result).toMatchObject({
+      ok: true,
+      decision: "approved",
+      endedEnrollmentUserIds: [],
+    });
     for (const seat of seats) {
       expect(getSeatAvailability(db, getSeat(seat.id))).toBe("refunded");
     }

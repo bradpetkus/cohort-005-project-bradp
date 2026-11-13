@@ -247,8 +247,8 @@ function decide(
       type: "refund_decided",
       refundRequestId,
       decision,
-      enrollmentEnded:
-        "enrollmentEnded" in result ? !!result.enrollmentEnded : false,
+      endedEnrollmentUserIds:
+        result.decision === "approved" ? result.endedEnrollmentUserIds : [],
     },
     when
   );

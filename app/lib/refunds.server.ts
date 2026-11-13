@@ -568,13 +568,20 @@ export function listTeamLicences(db: Queryable, buyerId: number, now: Date) {
 
 // ─── Deciding a Refund Request ───
 
-export type DecisionResult = { ok: true; email: Email } | Failure;
+// `endedEnrollmentUserIds` names whose Enrollment on the course the approval
+// actually removed: none when the buyer keeps theirs through a Claimed Seat
+// (docs/adr/0004).
+export type Approval = {
+  ok: true;
+  decision: "approved";
+  email: Email;
+  endedEnrollmentUserIds: number[];
+};
+export type Decline = { ok: true; decision: "declined"; email: Email };
 
-// `enrollmentEnded` is true only when the approval actually removed the
-// buyer's Enrollment (not for a Team Licence, nor under docs/adr/0004).
-export type ApprovalResult =
-  | { ok: true; email: Email; enrollmentEnded: boolean }
-  | Failure;
+export type ApprovalResult = Approval | Failure;
+export type DeclineResult = Decline | Failure;
+export type DecisionResult = Approval | Decline | Failure;
 
 function findOpenRefundRequest(
   tx: Queryable,
@@ -629,7 +636,7 @@ export function approveRefundRequest(
     if (!found.ok) return found;
 
     const { purchase } = found;
-    let enrollmentEnded = false;
+    const endedEnrollmentUserIds: number[] = [];
     const seats = getSeats(tx, purchase.id);
 
     if (kindOf(seats) === "team_licence") {
@@ -671,7 +678,7 @@ export function approveRefundRequest(
             )
           )
           .run();
-        enrollmentEnded = removed.changes > 0;
+        if (removed.changes > 0) endedEnrollmentUserIds.push(purchase.userId);
       }
     }
 
@@ -688,8 +695,9 @@ export function approveRefundRequest(
 
     return {
       ok: true,
+      decision: "approved",
       email: buildDecisionEmail(tx, purchase, RefundStatus.Approved, note),
-      enrollmentEnded,
+      endedEnrollmentUserIds,
     };
   });
 }
@@ -705,7 +713,7 @@ export function declineRefundRequest(
   platformAdminId: number,
   note: string,
   now: Date
-): DecisionResult {
+): DeclineResult {
   const trimmedNote = note.trim();
 
   if (trimmedNote.length === 0) {
@@ -716,7 +724,7 @@ export function declineRefundRequest(
     };
   }
 
-  return db.transaction((tx): DecisionResult => {
+  return db.transaction((tx): DeclineResult => {
     const found = findOpenRefundRequest(tx, refundRequestId);
     if (!found.ok) return found;
 
@@ -732,6 +740,7 @@ export function declineRefundRequest(
 
     return {
       ok: true,
+      decision: "declined",
       email: buildDecisionEmail(
         tx,
         found.purchase,

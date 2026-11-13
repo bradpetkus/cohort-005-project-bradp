@@ -226,9 +226,9 @@ export type RefundNotificationEvent =
       type: "refund_decided";
       refundRequestId: number;
       decision: "approved" | "declined";
-      // From the approve result: true only when the buyer's Enrollment was
-      // really removed (docs/adr/0004).
-      enrollmentEnded: boolean;
+      // From the approve result: the Students whose Enrollment was really
+      // removed (docs/adr/0004). Empty for a decline.
+      endedEnrollmentUserIds: number[];
     };
 
 function getRefundRequest(db: Db, refundRequestId: number) {
@@ -375,19 +375,26 @@ function recordRefundDecided(
       if (push) pushMessages.push(push);
     }
 
-    // In-app only, never bundled.
-    if (
+    // In-app only, never bundled: one row per Enrollment that ended.
+    const leavers =
       event.decision === "approved" &&
-      event.enrollmentEnded &&
+      event.endedEnrollmentUserIds.length > 0 &&
       request.instructorId !== request.deciderId
-    ) {
+        ? tx
+            .select({ id: users.id, name: users.name })
+            .from(users)
+            .where(inArray(users.id, event.endedEnrollmentUserIds))
+            .orderBy(users.id)
+            .all()
+        : [];
+    for (const leaver of leavers) {
       notify(
         tx,
         {
           recipientId: request.instructorId,
           type: NotificationType.EnrollmentEnded,
           bundleKey: null,
-          actorName: request.buyerName,
+          actorName: leaver.name,
           courseTitle: request.courseTitle,
           subjectTitle: null,
           detail: null,
