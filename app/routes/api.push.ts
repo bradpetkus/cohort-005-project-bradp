@@ -9,8 +9,10 @@ import {
   listPushDevices,
   removePushSubscription,
   savePushSubscription,
+  setPushPreference,
   testPushMessage,
 } from "~/lib/notifications.server";
+import { PushEventType } from "~/db/schema";
 import { deviceNameFromUserAgent } from "~/lib/push";
 
 // Phone push devices for the signed-in person. Every intent acts only on the
@@ -35,6 +37,12 @@ const pushActionSchema = z.discriminatedUnion("intent", [
   z.object({ intent: z.literal("test"), endpoint }),
   // Whether this browser's subscription is stored for the person.
   z.object({ intent: z.literal("status"), endpoint }),
+  // Turns one push event type on or off for all of the person's devices.
+  z.object({
+    intent: z.literal("preference"),
+    eventType: z.nativeEnum(PushEventType),
+    enabled: z.enum(["true", "false"]).transform((value) => value === "true"),
+  }),
 ]);
 
 export async function action({ request }: Route.ActionArgs) {
@@ -78,6 +86,10 @@ export async function action({ request }: Route.ActionArgs) {
       ]);
       return { ok: report.delivered > 0 };
     }
+
+    case "preference":
+      setPushPreference(db, userId, input.eventType, input.enabled);
+      return { ok: true };
 
     case "status":
       return {

@@ -17,6 +17,9 @@ import { db } from "~/db";
 import { eq } from "drizzle-orm";
 import { formatPrice } from "~/lib/utils";
 import { listRefundRequestsForBuyer } from "~/lib/refunds.server";
+import { getPushSettings } from "~/lib/notifications.server";
+import { vapidPublicKey } from "~/lib/push.server";
+import { NotificationsCard } from "~/components/notifications-card";
 
 const settingsSchema = z.object({
   name: z.string().trim().min(1, "Name cannot be empty."),
@@ -60,6 +63,8 @@ export async function loader({ request }: Route.LoaderArgs) {
       role: currentUser.role,
     },
     refundRequests,
+    pushSettings: getPushSettings(db, currentUserId),
+    pushPublicKey: vapidPublicKey(),
   };
 }
 
@@ -98,7 +103,7 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function Settings({ loaderData }: Route.ComponentProps) {
-  const { user, refundRequests } = loaderData;
+  const { user, refundRequests, pushSettings, pushPublicKey } = loaderData;
   const openCount = refundRequests.filter(
     (refundRequest) => refundRequest.status === RefundStatus.Open
   ).length;
@@ -187,6 +192,8 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
           </fetcher.Form>
         </CardContent>
       </Card>
+
+      <NotificationsCard pushPublicKey={pushPublicKey} {...pushSettings} />
 
       {refundRequests.length > 0 && (
         <Card className="mt-8 max-w-md">

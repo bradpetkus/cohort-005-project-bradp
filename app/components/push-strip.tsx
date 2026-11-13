@@ -70,26 +70,40 @@ async function postPush(fields: Record<string, string>) {
   return (await response.json()) as { ok?: boolean; stored?: boolean };
 }
 
-async function readStatus(): Promise<PushDeviceStatus> {
-  if (isIos() && !isStandalone()) return "needs-home-screen";
-  if (!pushSupported()) return "unsupported";
-  if (Notification.permission === "denied") return "blocked";
-  if (Notification.permission !== "granted") return "off";
+// The device's status and, when it's on, this browser's subscription
+// endpoint (so the settings card can tell it apart from other devices).
+async function readStatus(): Promise<{
+  status: PushDeviceStatus;
+  endpoint: string | null;
+}> {
+  if (isIos() && !isStandalone()) {
+    return { status: "needs-home-screen", endpoint: null };
+  }
+  if (!pushSupported()) return { status: "unsupported", endpoint: null };
+  if (Notification.permission === "denied") {
+    return { status: "blocked", endpoint: null };
+  }
+  if (Notification.permission !== "granted") {
+    return { status: "off", endpoint: null };
+  }
 
   const registration = await navigator.serviceWorker.getRegistration();
   const subscription = await registration?.pushManager.getSubscription();
-  if (!subscription) return "off";
+  if (!subscription) return { status: "off", endpoint: null };
   const { stored } = await postPush({
     intent: "status",
     endpoint: subscription.endpoint,
   });
-  return stored ? "on" : "off";
+  return stored
+    ? { status: "on", endpoint: subscription.endpoint }
+    : { status: "off", endpoint: null };
 }
 
 // `publicKey` is the VAPID public key; without it push isn't configured and
 // nothing is offered.
 export function usePushDevice(publicKey: string | null) {
   const [status, setStatus] = useState<PushDeviceStatus>("loading");
+  const [endpoint, setEndpoint] = useState<string | null>(null);
   const [hidden, setHidden] = useState(true);
 
   useEffect(() => {
@@ -106,7 +120,9 @@ export function usePushDevice(publicKey: string | null) {
     let cancelled = false;
     readStatus()
       .then((next) => {
-        if (!cancelled) setStatus(next);
+        if (cancelled) return;
+        setStatus(next.status);
+        setEndpoint(next.endpoint);
       })
       .catch(() => {
         if (!cancelled) setStatus("off");
@@ -160,6 +176,7 @@ export function usePushDevice(publicKey: string | null) {
         auth: json.keys?.auth ?? "",
       });
       setStatus("on");
+      setEndpoint(subscription.endpoint);
       toast.success("Phone notifications are on for this device", {
         description: "We sent a test so you can see what they look like.",
       });
@@ -172,13 +189,34 @@ export function usePushDevice(publicKey: string | null) {
     }
   }, [publicKey]);
 
+  // Stops push on this browser: forgets the device and unsubscribes.
+  const turnOff = useCallback(async () => {
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      const subscription = await registration?.pushManager.getSubscription();
+      const current = subscription?.endpoint ?? endpoint;
+      if (current) await postPush({ intent: "remove", endpoint: current });
+      await subscription?.unsubscribe();
+      setStatus("off");
+      setEndpoint(null);
+      toast.success("Phone notifications are off for this device", {
+        description: "You'll still see everything in the bell.",
+      });
+    } catch (error) {
+      console.error("Turning off push failed", error);
+      toast.error("Couldn't turn off phone notifications", {
+        description: "Please try again.",
+      });
+    }
+  }, [endpoint]);
+
   const waiting =
     !hidden &&
     (status === "off" ||
       status === "blocked" ||
       status === "needs-home-screen");
 
-  return { status, waiting, turnOn, notNow };
+  return { status, endpoint, waiting, turnOn, turnOff, notNow };
 }
 
 export type PushDevice = ReturnType<typeof usePushDevice>;
@@ -244,37 +282,49 @@ export function PushStrip({ push }: { push: PushDevice }) {
       )}
 
       {steps === "home-screen" && (
-        <StepsModal
-          title="Get Cadence notifications on your iPhone"
-          intro="iPhone only sends web notifications to apps on your Home Screen. Cadence isn't in the App Store; you add it straight from Safari."
-          steps={[
-            { icon: Share, text: "Tap Share in Safari's toolbar." },
-            { icon: PlusSquare, text: "Choose Add to Home Screen, then Add." },
-            {
-              icon: Smartphone,
-              text: "Open Cadence from your Home Screen and tap Turn on again.",
-            },
-          ]}
-          footer="Needs iOS 16.4 or later."
-          onClose={() => setSteps(null)}
-        />
+        <HomeScreenSteps onClose={() => setSteps(null)} />
       )}
-      {steps === "blocked" && (
-        <StepsModal
-          title="Notifications are blocked"
-          intro="You (or your browser) blocked notifications for Cadence. Only you can undo that, in the browser:"
-          steps={[
-            {
-              icon: Lock,
-              text: "Click the lock or site-settings icon next to the address.",
-            },
-            { icon: Smartphone, text: "Set Notifications to Allow." },
-            { icon: PlusSquare, text: "Come back here and tap Turn on." },
-          ]}
-          onClose={() => setSteps(null)}
-        />
-      )}
+      {steps === "blocked" && <UnblockSteps onClose={() => setSteps(null)} />}
     </>
+  );
+}
+
+// "Show me how": adding Cadence to the iPhone Home Screen.
+export function HomeScreenSteps({ onClose }: { onClose: () => void }) {
+  return (
+    <StepsModal
+      title="Get Cadence notifications on your iPhone"
+      intro="iPhone only sends web notifications to apps on your Home Screen. Cadence isn't in the App Store; you add it straight from Safari."
+      steps={[
+        { icon: Share, text: "Tap Share in Safari's toolbar." },
+        { icon: PlusSquare, text: "Choose Add to Home Screen, then Add." },
+        {
+          icon: Smartphone,
+          text: "Open Cadence from your Home Screen and tap Turn on again.",
+        },
+      ]}
+      footer="Needs iOS 16.4 or later."
+      onClose={onClose}
+    />
+  );
+}
+
+// "How to unblock": undoing a Block in the browser's site settings.
+export function UnblockSteps({ onClose }: { onClose: () => void }) {
+  return (
+    <StepsModal
+      title="Notifications are blocked"
+      intro="You (or your browser) blocked notifications for Cadence. Only you can undo that, in the browser:"
+      steps={[
+        {
+          icon: Lock,
+          text: "Click the lock or site-settings icon next to the address.",
+        },
+        { icon: Smartphone, text: "Set Notifications to Allow." },
+        { icon: PlusSquare, text: "Come back here and tap Turn on." },
+      ]}
+      onClose={onClose}
+    />
   );
 }
 
