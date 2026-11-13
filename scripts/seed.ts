@@ -14,6 +14,7 @@ import {
   QuestionType,
   TeamMemberRole,
 } from "../app/db/schema";
+import { recordNotificationEvent } from "../app/lib/notifications.server";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -65,6 +66,11 @@ async function seed() {
 
   // Drop and recreate tables for a clean seed
   sqlite.exec(`
+    DROP TABLE IF EXISTS notification_sources;
+    DROP TABLE IF EXISTS notifications;
+    DROP TABLE IF EXISTS announcements;
+    DROP TABLE IF EXISTS push_subscriptions;
+    DROP TABLE IF EXISTS push_preferences;
     DROP TABLE IF EXISTS comments;
     DROP TABLE IF EXISTS course_ratings;
     DROP TABLE IF EXISTS video_watch_events;
@@ -1994,6 +2000,26 @@ This course is still in draft while the cluster examples are rewritten against t
     `Created ${countRows(schema.comments)} lesson comments across ${countRows(schema.comments, isNull(schema.comments.parentId))} threads.`
   );
 
+  // ─── Notifications ───
+  // Replay every seeded reply through the notifications module, oldest first,
+  // so the bell holds what the app itself would have recorded.
+
+  const seededReplies = db
+    .select({ id: schema.comments.id, createdAt: schema.comments.createdAt })
+    .from(schema.comments)
+    .where(isNotNull(schema.comments.parentId))
+    .orderBy(schema.comments.createdAt, schema.comments.id)
+    .all();
+  for (const r of seededReplies) {
+    recordNotificationEvent(
+      db,
+      { type: "comment_reply", commentId: r.id },
+      new Date(r.createdAt)
+    );
+  }
+
+  console.log(`Created ${countRows(schema.notifications)} notifications.`);
+
   // ─── Lesson Progress ───
 
   // Helper to mark lessons as complete
@@ -2840,6 +2866,9 @@ This course is still in draft while the cluster examples are rewritten against t
   console.log(`  Enrollments: ${countRows(schema.enrollments)}`);
   console.log(`  Course ratings: ${countRows(schema.courseRatings)}`);
   console.log(`  Lesson comments: ${countRows(schema.comments)}`);
+  console.log(
+    `  Notifications: ${countRows(schema.notifications)} (${countRows(schema.notifications, isNull(schema.notifications.readAt))} unread); announcements: ${countRows(schema.announcements)}, push subscriptions: ${countRows(schema.pushSubscriptions)}, push mutes: ${countRows(schema.pushPreferences)}`
+  );
   console.log(
     `  Lesson progress: ${countRows(schema.lessonProgress)} (${countRows(schema.lessonProgress, eq(schema.lessonProgress.status, LessonProgressStatus.Completed))} completed)`
   );

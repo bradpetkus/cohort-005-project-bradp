@@ -208,9 +208,12 @@ function CommentItem({
 
   const isAuthor = currentUserId !== null && comment.author.id === currentUserId;
 
+  // Notification links land on `#comment-<id>`.
+  const anchorId = `comment-${comment.id}`;
+
   if (comment.deleted) {
     return (
-      <div className="py-3">
+      <div id={anchorId} className="scroll-mt-4 py-3">
         <p className="text-sm italic text-muted-foreground">
           This comment was deleted.
         </p>
@@ -225,7 +228,10 @@ function CommentItem({
   }
 
   return (
-    <div className={cn("py-3", isReply && "border-l pl-4")}>
+    <div
+      id={anchorId}
+      className={cn("scroll-mt-4 py-3", isReply && "border-l pl-4")}
+    >
       <div className="flex items-start gap-3">
         <UserAvatar
           name={comment.author.name}
