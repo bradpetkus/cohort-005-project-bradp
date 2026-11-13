@@ -23,6 +23,7 @@ import {
 } from "~/db/schema";
 import { coupons, enrollments, purchases, UserRole } from "~/db/schema";
 import { defaultPushTransport, type PushTransport } from "~/lib/push.server";
+import { pushEventTypesFor as pushEventTypesForRole } from "~/lib/push";
 
 // ─── Notifications ───
 // The only place that knows notification rules: who hears about an event,
@@ -834,6 +835,34 @@ export function removePushSubscription(
   db.delete(pushSubscriptions)
     .where(and(eq(pushSubscriptions.userId, userId), match))
     .run();
+}
+
+// What the Notifications card on /settings shows a person: their devices and
+// one switch per push event type their role can receive. The switches can
+// only be used once at least one device is on.
+export type PushSettings = {
+  devices: PushDevice[];
+  events: { eventType: PushEventType; enabled: boolean }[];
+  canChooseEvents: boolean;
+};
+
+export function getPushSettings(db: Db, userId: number): PushSettings {
+  const user = db
+    .select({ role: users.role })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+  const devices = listPushDevices(db, userId);
+  const preferences = getPushPreferences(db, userId);
+  const eventTypes = user ? pushEventTypesForRole(user.role) : [];
+  return {
+    devices,
+    events: eventTypes.map((eventType) => ({
+      eventType,
+      enabled: preferences[eventType],
+    })),
+    canChooseEvents: devices.length > 0,
+  };
 }
 
 // The push sent to the device that has just turned push on.
