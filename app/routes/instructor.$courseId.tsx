@@ -54,7 +54,13 @@ import {
   Award,
   Globe,
   FileText,
+  Megaphone,
 } from "lucide-react";
+import {
+  AnnouncementsTab,
+  type AnnouncementTargetOption,
+} from "~/components/announcements-tab";
+import { AnnouncementTargetKind } from "~/db/schema";
 import { data, isRouteErrorResponse } from "react-router";
 import { z } from "zod";
 import { parseFormData, parseParams } from "~/lib/validation";
@@ -639,7 +645,14 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
   const quizCount = lessonQuizzes.length;
 
-  return { course, lessonCount, enrollmentCount, students, quizCount };
+  return {
+    course,
+    lessonCount,
+    enrollmentCount,
+    students,
+    quizCount,
+    lessonQuizzes,
+  };
 }
 
 export async function action({ params, request }: Route.ActionArgs) {
@@ -1492,8 +1505,38 @@ function statusBadgeColor(status: string) {
 export default function InstructorCourseEditor({
   loaderData,
 }: Route.ComponentProps) {
-  const { course, lessonCount, enrollmentCount, students, quizCount } =
-    loaderData;
+  const {
+    course,
+    lessonCount,
+    enrollmentCount,
+    students,
+    quizCount,
+    lessonQuizzes,
+  } = loaderData;
+  // The Announcements picker: every lesson, each followed by its quiz.
+  const announcementTargets: AnnouncementTargetOption[] =
+    course.modules.flatMap((mod) =>
+      mod.lessons.flatMap((lesson) => {
+        const quiz = lessonQuizzes.find((q) => q.lessonId === lesson.id);
+        const lessonTarget = {
+          kind: AnnouncementTargetKind.Lesson,
+          lessonId: lesson.id,
+          title: lesson.title,
+          moduleTitle: mod.title,
+        };
+        return quiz
+          ? [
+              lessonTarget,
+              {
+                kind: AnnouncementTargetKind.Quiz,
+                lessonId: lesson.id,
+                title: quiz.quizTitle,
+                moduleTitle: mod.title,
+              },
+            ]
+          : [lessonTarget];
+      })
+    );
   const statusFetcher = useFetcher();
   const reorderFetcher = useFetcher();
   const lessonReorderFetcher = useFetcher();
@@ -1714,7 +1757,18 @@ export default function InstructorCourseEditor({
             <Users className="size-4" />
             Students
           </TabsTrigger>
+          <TabsTrigger value="announcements">
+            <Megaphone className="size-4" />
+            Announcements
+          </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="announcements" className="mt-6">
+          <AnnouncementsTab
+            courseId={course.id}
+            targets={announcementTargets}
+          />
+        </TabsContent>
 
         {/* Content Tab */}
         <TabsContent value="content" className="mt-6">

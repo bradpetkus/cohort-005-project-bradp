@@ -56,4 +56,8 @@ export default [
   route("api/set-dev-country", "routes/api.set-dev-country.ts"),
   route("api/notifications", "routes/api.notifications.ts"),
   route("api/push", "routes/api.push.ts"),
+  route(
+    "instructor/:courseId/announcements",
+    "routes/instructor.$courseId.announcements.ts"
+  ),
 ] satisfies RouteConfig;

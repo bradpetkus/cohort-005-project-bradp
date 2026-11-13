@@ -910,14 +910,14 @@ export async function action({ params, request }: Route.ActionArgs) {
           parsed.data.parentId ?? null,
           parsed.data.body
         );
-        if (created.parentId !== null) {
-          const { pushMessages } = recordNotificationEvent(
-            db,
-            { type: "comment_reply", commentId: created.id },
-            new Date()
-          );
-          await deliverPushMessages(db, pushMessages);
-        }
+        const { pushMessages } = recordNotificationEvent(
+          db,
+          created.parentId !== null
+            ? { type: "comment_reply", commentId: created.id }
+            : { type: "new_question", commentId: created.id },
+          new Date()
+        );
+        await deliverPushMessages(db, pushMessages);
         return { ok: true };
       }
 

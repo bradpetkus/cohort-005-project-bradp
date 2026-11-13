@@ -562,3 +562,120 @@ describe("push preferences", () => {
     ]);
   });
 });
+
+function ask(userId: number, when = NOW, onLesson = lessonId) {
+  const comment = db
+    .insert(schema.comments)
+    .values({ lessonId: onLesson, userId, parentId: null, body: "How?" })
+    .returning()
+    .get();
+  return recordNotificationEvent(
+    db,
+    { type: "new_question", commentId: comment.id },
+    when
+  );
+}
+
+describe("a new question on a lesson", () => {
+  it("notifies the course's Instructor with a link to the Questions page", () => {
+    const ana = addLearner("Ana");
+
+    ask(ana.id);
+
+    expect(listBell(db, base.instructor.id)).toEqual([
+      expect.objectContaining({
+        type: "question",
+        title: "Ana asked a question on Lesson 3",
+        snippet: "Test Course",
+        unread: true,
+        url: "/instructor/questions",
+      }),
+    ]);
+  });
+
+  it("never notifies the Instructor about their own comment", () => {
+    ask(base.instructor.id);
+
+    expect(listBell(db, base.instructor.id)).toEqual([]);
+  });
+
+  it("does nothing for a reply", () => {
+    const ana = addLearner("Ana");
+    const question = postComment(base.instructor.id);
+    const answer = db
+      .insert(schema.comments)
+      .values({ lessonId, userId: ana.id, parentId: question.id, body: "x" })
+      .returning()
+      .get();
+
+    recordNotificationEvent(
+      db,
+      { type: "new_question", commentId: answer.id },
+      NOW
+    );
+
+    expect(listBell(db, base.instructor.id)).toEqual([]);
+  });
+});
+
+describe("bundling questions", () => {
+  it("merges questions on the same lesson into one unread row", () => {
+    const ana = addLearner("Ana");
+    const bo = addLearner("Bo");
+    ask(ana.id);
+    ask(bo.id, minutesAfter(1));
+    ask(ana.id, minutesAfter(2));
+
+    const bell = listBell(db, base.instructor.id);
+    expect(bell).toEqual([
+      expect.objectContaining({
+        title: "3 new questions on Lesson 3",
+        url: "/instructor/questions",
+        lastEventAt: minutesAfter(2).toISOString(),
+      }),
+    ]);
+    expect(getUnreadCount(db, base.instructor.id)).toBe(1);
+  });
+
+  it("starts a fresh row once the bundle has been read", () => {
+    const ana = addLearner("Ana");
+    ask(ana.id);
+    ask(ana.id, minutesAfter(1));
+    const [row] = listBell(db, base.instructor.id);
+    markNotificationRead(db, base.instructor.id, row.id, minutesAfter(2));
+
+    ask(ana.id, minutesAfter(3));
+
+    expect(listBell(db, base.instructor.id)).toEqual([
+      expect.objectContaining({
+        title: "Ana asked a question on Lesson 3",
+        unread: true,
+      }),
+      expect.objectContaining({
+        title: "2 new questions on Lesson 3",
+        unread: false,
+      }),
+    ]);
+  });
+
+  it("keeps different lessons in separate rows", () => {
+    const ana = addLearner("Ana");
+    const module = db
+      .insert(schema.modules)
+      .values({ courseId: base.course.id, title: "More", position: 2 })
+      .returning()
+      .get();
+    const otherLesson = db
+      .insert(schema.lessons)
+      .values({ moduleId: module.id, title: "Lesson 4", position: 1 })
+      .returning()
+      .get();
+    ask(ana.id);
+    ask(ana.id, minutesAfter(1), otherLesson.id);
+
+    expect(listBell(db, base.instructor.id).map((r) => r.title)).toEqual([
+      "Ana asked a question on Lesson 4",
+      "Ana asked a question on Lesson 3",
+    ]);
+  });
+});

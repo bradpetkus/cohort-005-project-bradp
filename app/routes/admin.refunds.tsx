@@ -15,6 +15,10 @@ import { AlertTriangle, Receipt } from "lucide-react";
 import { data, isRouteErrorResponse, Link } from "react-router";
 import { formatPrice } from "~/lib/utils";
 import {
+  deliverPushMessages,
+  recordNotificationEvent,
+} from "~/lib/notifications.server";
+import {
   approveRefundRequest,
   declineRefundRequest,
   listRefundRequestsForReview,
@@ -126,6 +130,19 @@ export async function action({ request }: Route.ActionArgs) {
   if (!result.ok) {
     return data({ error: result.error }, { status: result.status });
   }
+
+  const { pushMessages } = recordNotificationEvent(
+    db,
+    {
+      type: "refund_decided",
+      refundRequestId,
+      decision: intent === "approve" ? "approved" : "declined",
+      enrollmentEnded:
+        "enrollmentEnded" in result && result.enrollmentEnded === true,
+    },
+    new Date()
+  );
+  await deliverPushMessages(db, pushMessages);
 
   await sendEmail(result.email);
 

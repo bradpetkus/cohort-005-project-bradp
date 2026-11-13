@@ -271,7 +271,7 @@ describe("approving a Refund Request", () => {
 
     const result = approveRefundRequest(db, id, platformAdmin.id, null, NOW);
 
-    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({ ok: true, enrollmentEnded: true });
     expect(isEnrolled(base.user.id)).toBe(false);
     expect(
       db
@@ -310,8 +310,9 @@ describe("approving a Refund Request", () => {
       .get();
     const id = raise(purchase.id, base.user.id);
 
-    approveRefundRequest(db, id, platformAdmin.id, null, NOW);
+    const result = approveRefundRequest(db, id, platformAdmin.id, null, NOW);
 
+    expect(result).toMatchObject({ ok: true, enrollmentEnded: false });
     expect(isEnrolled(base.user.id)).toBe(true);
   });
 
@@ -322,7 +323,7 @@ describe("approving a Refund Request", () => {
 
     const result = approveRefundRequest(db, id, platformAdmin.id, null, NOW);
 
-    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({ ok: true, enrollmentEnded: false });
     for (const seat of seats) {
       expect(getSeatAvailability(db, getSeat(seat.id))).toBe("refunded");
     }
