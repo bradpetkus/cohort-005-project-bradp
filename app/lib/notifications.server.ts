@@ -1245,13 +1245,21 @@ function currentStudents(db: Queryable, courseId: number, senderId: number) {
     .all();
 }
 
-// Lapsed Students: progress on the course's lessons but no Enrollment
-// (GLOSSARY.md). They never get the Announcement.
+// Lapsed Students: Students with progress on the course's lessons but no
+// Enrollment (GLOSSARY.md). Staff with progress aren't Students. Lapsed
+// Students never get the Announcement.
 function lapsedCount(db: Queryable, courseId: number, senderId: number) {
   return (
     db
       .select({ count: sql<number>`count(distinct ${lessonProgress.userId})` })
       .from(lessonProgress)
+      .innerJoin(
+        users,
+        and(
+          eq(users.id, lessonProgress.userId),
+          eq(users.role, UserRole.Student)
+        )
+      )
       .innerJoin(lessons, eq(lessons.id, lessonProgress.lessonId))
       .innerJoin(modules, eq(modules.id, lessons.moduleId))
       .leftJoin(

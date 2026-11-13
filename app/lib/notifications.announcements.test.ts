@@ -174,6 +174,22 @@ describe("previewing an Announcement", () => {
     expect(result.lapsedCount).toBe(3);
   });
 
+  it("leaves staff with progress out of the Lapsed count", () => {
+    addLapsed("Lee");
+    const ada = addLapsed("Ada");
+    db.update(schema.users)
+      .set({ role: UserRole.Admin })
+      .where(eq(schema.users.id, ada.id))
+      .run();
+    const ivy = addLapsed("Ivy");
+    db.update(schema.users)
+      .set({ role: UserRole.Instructor })
+      .where(eq(schema.users.id, ivy.id))
+      .run();
+
+    expect(preview().lapsedCount).toBe(1);
+  });
+
   it("previews the bell row with the note, and push text without it", () => {
     addQuiz("Check your understanding");
 
