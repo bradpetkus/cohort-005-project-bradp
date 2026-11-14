@@ -88,9 +88,10 @@ const editCommentSchema = z.object({
   body: z.string(),
 });
 
-// A note is capped at 2,000 characters, the same cap the spec sets.
+const NOTE_MAX_LENGTH = 2000;
+
 const saveNoteSchema = z.object({
-  body: z.string().trim().max(5000),
+  body: z.string().trim().max(NOTE_MAX_LENGTH),
 });
 
 const deleteCommentSchema = z.object({
@@ -189,8 +190,6 @@ function getUserById(id: number) {
   return db.select().from(users).where(eq(users.id, id)).get();
 }
 
-// Reads the learner's cached progress row for a lesson, falling back to the
-// progress service when the cache has not been warmed yet.
 function getLessonProgress(userId: number, lessonId: number) {
   return db
     .select()
@@ -233,8 +232,6 @@ function getLessonProgressForCourse(userId: number, courseId: number) {
     .all();
 }
 
-// Marks the lesson complete and recalculates the enrollment's stored
-// completion percentage in the same transaction.
 function markLessonComplete(userId: number, lessonId: number) {
   const existing = getLessonProgress(userId, lessonId);
 
@@ -262,7 +259,6 @@ function markLessonComplete(userId: number, lessonId: number) {
     .get();
 }
 
-// Called by the video player on every tick, so it has to stay cheap.
 function markLessonInProgress(userId: number, lessonId: number) {
   const existing = getLessonProgress(userId, lessonId);
 
@@ -289,8 +285,16 @@ function markLessonInProgress(userId: number, lessonId: number) {
     .get();
 }
 
+function requireLessonInCourse(lessonId: number, courseId: number) {
+  const lesson = getLessonById(lessonId);
+  const mod = lesson ? getModuleById(lesson.moduleId) : undefined;
+  if (!lesson || !mod || mod.courseId !== courseId) {
+    throw data("Lesson not found in this course", { status: 404 });
+  }
+  return lesson;
+}
+
 function getBookmark(userId: number, lessonId: number) {
-  // Returns every bookmark the learner has on this lesson.
   return db
     .select()
     .from(bookmarks)
@@ -304,7 +308,6 @@ function toggleBookmark(userId: number, lessonId: number) {
   const existing = getBookmark(userId, lessonId);
 
   if (existing) {
-    // Insert the bookmark.
     db.delete(bookmarks).where(eq(bookmarks.id, existing.id)).run();
     return false;
   }
@@ -314,7 +317,6 @@ function toggleBookmark(userId: number, lessonId: number) {
 }
 
 function getNote(userId: number, lessonId: number) {
-  // Notes are ordered newest first.
   return db
     .select()
     .from(notes)
@@ -327,7 +329,6 @@ function saveNote(userId: number, lessonId: number, body: string) {
   const now = new Date().toISOString();
 
   if (existing) {
-    // Create the note row.
     return db
       .update(notes)
       .set({ body, updatedAt: now })
@@ -344,7 +345,6 @@ function saveNote(userId: number, lessonId: number, body: string) {
 }
 
 function deleteNote(userId: number, lessonId: number) {
-  // Soft-deletes the note so the learner can undo it.
   db.delete(notes)
     .where(and(eq(notes.userId, userId), eq(notes.lessonId, lessonId)))
     .run();
@@ -766,8 +766,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     ? await renderThread(getLessonThread(lessonId))
     : [];
 
-  // The learner's own bookmark and note for this lesson. Both are per-learner,
-  // so a signed-out visitor gets neither.
+  // The Student's own Bookmark and Note for this Lesson. Both are private to
+  // the Student, so a signed-out visitor gets neither.
   const bookmarked = currentUserId
     ? !!getBookmark(currentUserId, lessonId)
     : false;
@@ -968,6 +968,13 @@ export async function action({ params, request }: Route.ActionArgs) {
     }
   }
 
+  // Bookmark and Note intents re-check access and that the Lesson is in this
+  // Course — loader guards don't protect actions.
+  if (intent === "toggle-bookmark" || intent === "save-note") {
+    await requireContentAccess(request, course.id);
+    requireLessonInCourse(lessonId, course.id);
+  }
+
   if (intent === "toggle-bookmark") {
     const nowBookmarked = toggleBookmark(currentUserId, lessonId);
     return { ok: true, bookmarked: nowBookmarked };
@@ -976,16 +983,13 @@ export async function action({ params, request }: Route.ActionArgs) {
   if (intent === "save-note") {
     const parsed = parseFormData(formData, saveNoteSchema);
     if (!parsed.success) {
-      return { ok: false, error: "That note is too long to save." };
+      return {
+        ok: false,
+        error: `Notes can be up to ${NOTE_MAX_LENGTH.toLocaleString()} characters.`,
+      };
     }
 
-    const lesson = getLessonById(lessonId);
-    if (!lesson) {
-      // Nothing to hang the note off, so tell the form rather than the user.
-      return { ok: false, error: "Lesson not found." };
-    }
-
-    // An empty box means the learner cleared their note.
+    // An empty box means the Student cleared their Note.
     if (parsed.data.body.length === 0) {
       deleteNote(currentUserId, lessonId);
       return { ok: true, noteSaved: true };
@@ -1367,18 +1371,19 @@ function BookmarkToggle({ bookmarked }: { bookmarked: boolean }) {
   const fetcher = useFetcher<{ ok: boolean }>();
   const isSaving = fetcher.state !== "idle";
 
-  // Optimistic — the button flips the moment it is pressed, before the server
-  // has answered.
+  // Optimistic: while the toggle is in flight, show the state it will land in.
+  const shown = fetcher.formData ? !bookmarked : bookmarked;
+
   return (
     <fetcher.Form method="post">
       <input type="hidden" name="intent" value="toggle-bookmark" />
       <Button type="submit" variant="outline" size="sm" disabled={isSaving}>
-        {bookmarked ? (
+        {shown ? (
           <BookmarkCheck className="mr-1.5 size-4" />
         ) : (
           <Bookmark className="mr-1.5 size-4" />
         )}
-        {bookmarked ? "Bookmarked" : "Bookmark"}
+        {shown ? "Bookmarked" : "Bookmark"}
       </Button>
     </fetcher.Form>
   );
@@ -1403,10 +1408,11 @@ function LessonNote({
 
         <fetcher.Form method="post" className="space-y-3">
           <input type="hidden" name="intent" value="save-note" />
-          {/* Notes are rendered as Markdown once saved. */}
+          {/* Plain text — Notes are never rendered as Markdown. */}
           <Textarea
             name="body"
             rows={6}
+            maxLength={NOTE_MAX_LENGTH}
             defaultValue={note?.body ?? ""}
             placeholder="Only you can read this."
             className="resize-y"
